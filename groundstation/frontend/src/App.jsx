@@ -44,6 +44,7 @@ export default function App() {
     tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.45,
+    dbFloor: -90,
     dbCeil: -20,
   });
 

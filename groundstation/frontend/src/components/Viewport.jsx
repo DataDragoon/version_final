@@ -148,6 +148,7 @@ export default function Viewport({
               sfcwResult={sfcwResult}
               sfcwProgress={sfcwProgress}
               sfcwRunning={sfcwRunning}
+              dbFloor={sfcwParams.dbFloor}
               dbCeil={sfcwParams.dbCeil}
             />
             {!sfcwResult && !sfcwRunning && (
@@ -177,6 +178,7 @@ export default function Viewport({
               params={bscanParams}
               capturing={bscanCapturing}
               sfcwProgress={sfcwProgress}
+              dbFloor={sfcwParams.dbFloor}
               dbCeil={sfcwParams.dbCeil}
             />
             {bscanData.length === 0 && (

@@ -7,7 +7,7 @@ const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange }) {
-  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset, dbCeil } = params;
+  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset, dbFloor, dbCeil } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -101,14 +101,24 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           min={0}
           max={10}
         />
-        <EditableField
-          label="dB Ceiling"
-          value={dbCeil}
-          unit="dB"
-          onChange={(v) => { update('dbCeil', v); }}
-          min={-60}
-          max={40}
-        />
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="dB Floor"
+            value={dbFloor}
+            unit="dB"
+            onChange={(v) => { update('dbFloor', v); }}
+            min={-120}
+            max={40}
+          />
+          <EditableField
+            label="dB Ceil"
+            value={dbCeil}
+            unit="dB"
+            onChange={(v) => { update('dbCeil', v); }}
+            min={-120}
+            max={40}
+          />
+        </div>
       </Section>
 
       {/* Gains */}

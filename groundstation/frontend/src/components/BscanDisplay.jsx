@@ -12,7 +12,7 @@ function jet(t) {
   ];
 }
 
-export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbCeil = -20 }) {
+export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20 }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -52,14 +52,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     const apertureLen = (numPos - 1) * stepSize;
 
     // Dynamic range
-    let globalMin = Infinity;
-    for (let i = 0; i < numPos; i++) {
-      const mags = scanData[i].magnitudes;
-      for (let j = 0; j < mags.length; j++) {
-        if (mags[j] < globalMin) globalMin = mags[j];
-      }
-    }
-    const dbMin = globalMin;
+    const dbMin = dbFloor;
     const dbMax = dbCeil;
 
     // Draw B-scan image
@@ -200,7 +193,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
         ctx.fillText(label, labelX, crosshair.y - 8);
       }
     }
-  }, [scanData, params, crosshair, dbCeil]);
+  }, [scanData, params, crosshair, dbFloor, dbCeil]);
 
   useEffect(() => {
     const render = () => {

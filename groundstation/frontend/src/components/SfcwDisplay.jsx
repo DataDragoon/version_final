@@ -15,7 +15,7 @@ function jet(t) {
   ];
 }
 
-export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbCeil = -20 }) {
+export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbFloor = -90, dbCeil = -20 }) {
   const rangeCanvasRef = useRef(null);
   const colormapCanvasRef = useRef(null);
   const animRef = useRef(null);
@@ -59,7 +59,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbC
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = Math.min(...mags);
+    const magMin = dbFloor;
     const magMax = dbCeil;
 
     // Grid
@@ -174,7 +174,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbC
         w - pad.right, 26
       );
     }
-  }, [crosshair, dbCeil]);
+  }, [crosshair, dbFloor, dbCeil]);
 
   const drawColormap = useCallback(() => {
     const canvas = colormapCanvasRef.current;
@@ -207,7 +207,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbC
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const dbMin = Math.min(...mags);
+    const dbMin = dbFloor;
     const dbMax = dbCeil;
 
     // Draw horizontal colormap strip — each bin is a colored column
@@ -257,8 +257,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbC
     ctx.fillStyle = '#444444';
     ctx.font = '9px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${dbMin.toFixed(0)} to ${dbMax} dB`, w - pad.right - 16, 14);
-  }, [dbCeil]);
+    ctx.fillText(`${dbMin} to ${dbMax} dB`, w - pad.right - 16, 14);
+  }, [dbFloor, dbCeil]);
 
   useEffect(() => {
     const render = () => {

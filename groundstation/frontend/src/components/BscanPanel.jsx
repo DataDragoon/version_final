@@ -2,19 +2,20 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sfcwResult, scanData, onScanAction, params, onParamsChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams }) {
   const { stepSize, numPositions } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
   };
 
+  const canCapture = isConnected && sdrConnected && !scanCapturing;
   const captured = scanData.length;
   const apertureLength = stepSize * (numPositions - 1);
-  const canCapture = isConnected && sdrConnected && sfcwRunning && sfcwResult && captured < numPositions;
 
   return (
     <>
+      {/* Aperture Parameters */}
       <Section label="Aperture">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
@@ -36,6 +37,7 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sfc
         </div>
       </Section>
 
+      {/* Scan Info */}
       <Section label="Scan Info">
         <div className="grid grid-cols-2 gap-2">
           <InfoTile label="Aperture" value={`${apertureLength.toFixed(1)} cm`} />
@@ -43,32 +45,66 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sfc
         </div>
       </Section>
 
-      <Section label="Capture">
+      {/* Background */}
+      <Section label="Background">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => onScanAction('capture_bg')}
+            disabled={!canCapture}
+            className={cn(
+              'px-3 py-2.5 rounded-lg text-xs font-medium transition-all',
+              canCapture
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
+          >
+            Capture BG
+          </button>
+          <button
+            onClick={() => onScanAction('clear_bg')}
+            className="px-3 py-2.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+          >
+            Clear BG
+          </button>
+        </div>
+        {bgCaptured && (
+          <div className="flex items-center gap-2 px-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            <span className="text-[10px] text-emerald-400/80 uppercase tracking-wider font-medium">Background active</span>
+          </div>
+        )}
+      </Section>
+
+      {/* Capture */}
+      <Section label="Scan">
         <button
           onClick={() => onScanAction('capture')}
-          disabled={!canCapture}
+          disabled={!canCapture || captured >= numPositions}
           className={cn(
             'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
             'transition-all duration-500 cursor-pointer',
             'disabled:cursor-not-allowed disabled:opacity-40',
-            canCapture
+            canCapture && captured < numPositions
               ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
               : 'bg-[#0a0a0a]/50 border-white/5',
           )}
         >
           <div className={cn(
             'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
-            canCapture ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
+            canCapture && captured < numPositions ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
           )}>
-            <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
+            {scanCapturing ? (
+              <div className="w-3 h-3 rounded-full border-2 border-[#6B9BD2] border-t-transparent animate-spin" />
+            ) : (
+              <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
+            )}
           </div>
           <div className="flex flex-col gap-0.5 text-left min-w-0">
             <span className="text-sm font-semibold text-white">
-              Capture Position {captured + 1}
+              {scanCapturing ? 'Sweeping...' : `Capture Position ${captured + 1}`}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
-              {!sfcwRunning ? 'Start SFCW sweep first' :
-               !sfcwResult ? 'Waiting for sweep data...' :
+              {scanCapturing ? 'Single sweep in progress' :
                captured >= numPositions ? 'Scan complete' :
                `At ${(captured * stepSize).toFixed(1)} cm`}
             </span>

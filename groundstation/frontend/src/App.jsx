@@ -48,22 +48,13 @@ export default function App() {
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
+  const [bscanCapturing, setBscanCapturing] = useState(false);
+  const [bscanBgCaptured, setBscanBgCaptured] = useState(false);
+  const bscanPendingRef = useRef(null); // 'capture' | 'capture_bg' | null
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
   });
-
-  const handleBscanAction = useCallback((action) => {
-    if (action === 'capture') {
-      if (sfcwResult) {
-        setBscanData(prev => [...prev, { magnitudes: [...sfcwResult.magnitudes], distances: [...sfcwResult.distances] }]);
-      }
-    } else if (action === 'new') {
-      setBscanData([]);
-    } else if (action === 'undo') {
-      setBscanData(prev => prev.slice(0, -1));
-    }
-  }, [sfcwResult]);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -103,19 +94,55 @@ export default function App() {
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
+      if (msg.background_active !== undefined) {
+        setBscanBgCaptured(msg.background_active);
+      }
     } else if (msg.type === 'sfcw_result') {
-      setSfcwResult(msg);
+      if (bscanPendingRef.current === 'capture') {
+        setBscanData(prev => [...prev, { magnitudes: [...msg.magnitudes], distances: [...msg.distances] }]);
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      } else if (bscanPendingRef.current === 'capture_bg') {
+        setBscanBgCaptured(true);
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      } else {
+        setSfcwResult(msg);
+      }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
       setSfcwProgress(msg);
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
+      if (bscanPendingRef.current) {
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      }
     }
   }, []);
 
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
+
+  const handleBscanAction = useCallback((action) => {
+    if (action === 'capture') {
+      bscanPendingRef.current = 'capture';
+      setBscanCapturing(true);
+      sendSdr({ cmd: 'bscan_capture' });
+    } else if (action === 'capture_bg') {
+      bscanPendingRef.current = 'capture_bg';
+      setBscanCapturing(true);
+      sendSdr({ cmd: 'bscan_capture_bg' });
+    } else if (action === 'clear_bg') {
+      sendSdr({ cmd: 'bscan_clear_bg' });
+      setBscanBgCaptured(false);
+    } else if (action === 'new') {
+      setBscanData([]);
+    } else if (action === 'undo') {
+      setBscanData(prev => prev.slice(0, -1));
+    }
+  }, [sendSdr]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -191,6 +218,8 @@ export default function App() {
         onSfcwParamsChange={setSfcwParams}
         sfcwResult={sfcwResult}
         bscanData={bscanData}
+        bscanCapturing={bscanCapturing}
+        bscanBgCaptured={bscanBgCaptured}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
@@ -212,6 +241,7 @@ export default function App() {
         sfcwRunning={sfcwRunning}
         bscanData={bscanData}
         bscanParams={bscanParams}
+        bscanCapturing={bscanCapturing}
       />
     </div>
   );

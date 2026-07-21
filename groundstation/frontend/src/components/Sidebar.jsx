@@ -44,6 +44,8 @@ export default function Sidebar({
   onSfcwParamsChange,
   sfcwResult,
   bscanData,
+  bscanCapturing,
+  bscanBgCaptured,
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
@@ -195,12 +197,14 @@ export default function Sidebar({
                 <BscanPanel
                   isConnected={isConnected}
                   sdrConnected={sdrConnected}
-                  sfcwRunning={sfcwRunning}
-                  sfcwResult={sfcwResult}
+                  sendSdr={sendSdr}
                   scanData={bscanData}
+                  scanCapturing={bscanCapturing}
+                  bgCaptured={bscanBgCaptured}
                   onScanAction={onBscanAction}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
+                  sfcwParams={sfcwParams}
                 />
               )}
             </div>

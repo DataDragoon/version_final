@@ -11,7 +11,7 @@ function viridis(t) {
   return [r, g, b];
 }
 
-export default function BscanDisplay({ scanData, params }) {
+export default function BscanDisplay({ scanData, params, capturing, sfcwProgress }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -213,6 +213,14 @@ export default function BscanDisplay({ scanData, params }) {
 
   return (
     <div className="flex flex-col w-full h-full">
+      {capturing && sfcwProgress && (
+        <div className="absolute top-0 left-0 right-0 z-10 h-0.5">
+          <div
+            className="h-full bg-gradient-to-r from-[#6B9BD2] to-[#8BB8E8] transition-all duration-200"
+            style={{ width: `${(sfcwProgress.step / sfcwProgress.total) * 100}%` }}
+          />
+        </div>
+      )}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={canvasRef}

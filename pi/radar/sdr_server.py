@@ -143,6 +143,35 @@ class SDRServer:
             elif action == 'sfcw_get_status':
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 
+            # B-Scan commands — single-shot sweeps using current SFCW params
+            elif action == 'bscan_capture':
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                    await self._broadcast_sfcw_status()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'bscan_capture_bg':
+                self.sfcw.capture_background()
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                    await self._broadcast_sfcw_status()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'bscan_clear_bg':
+                self.sfcw.clear_background()
+
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))
 

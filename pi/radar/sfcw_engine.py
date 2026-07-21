@@ -39,6 +39,7 @@ class SFCWEngine:
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
+        self._single_shot = False
         self._background = None
         self._capture_background = False
 
@@ -122,6 +123,17 @@ class SFCWEngine:
             return
         self._callback = callback
         self._stop_event.clear()
+        self._single_shot = False
+        self.running = True
+        self._thread = threading.Thread(target=self._sweep_loop, daemon=True)
+        self._thread.start()
+
+    def run_single(self, callback):
+        if self.running:
+            self.stop()
+        self._callback = callback
+        self._stop_event.clear()
+        self._single_shot = True
         self.running = True
         self._thread = threading.Thread(target=self._sweep_loop, daemon=True)
         self._thread.start()
@@ -144,6 +156,8 @@ class SFCWEngine:
                 range_profile = self._perform_sweep()
                 if range_profile is not None and self._callback:
                     self._callback(range_profile)
+                if self._single_shot:
+                    break
 
         except Exception as e:
             print(f"[sfcw] Sweep error: {e}")

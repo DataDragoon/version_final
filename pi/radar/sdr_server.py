@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import time
 import numpy as np
 import websockets
 
@@ -25,6 +26,8 @@ class SDRServer:
         self.sfcw_queue = asyncio.Queue(maxsize=8)
         self._broadcast_task = None
         self._sfcw_broadcast_task = None
+        self._hwcal_mode = None
+        self._hwcal_step_size_cm = None
 
     async def start(self):
         try:
@@ -172,6 +175,47 @@ class SDRServer:
             elif action == 'bscan_clear_bg':
                 self.sfcw.clear_background()
 
+            # Hardware calibration commands
+            elif action == 'hwcal_capture':
+                mode = cmd.get('mode')
+                if mode not in ('cable_thru', 'free_space', 'per_position'):
+                    await ws.send(json.dumps({'type': 'error', 'message': f'Invalid calibration mode: {mode}'}))
+                    return
+                step_size_cm = cmd.get('step_size_cm')
+                # Stop any running sweep/TX/RX
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                    await self._broadcast_sfcw_status()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                self._hwcal_mode = mode
+                self._hwcal_step_size_cm = step_size_cm
+                self.sfcw.run_calibration(mode, self._hwcal_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'hwcal_per_position_new':
+                self.sfcw.clear_per_position()
+                await ws.send(json.dumps({
+                    'type': 'hwcal_status',
+                    **self.sfcw.load_calibration_status(),
+                }))
+
+            elif action == 'hwcal_per_position_undo':
+                self.sfcw.undo_per_position()
+                await ws.send(json.dumps({
+                    'type': 'hwcal_status',
+                    **self.sfcw.load_calibration_status(),
+                }))
+
+            elif action == 'hwcal_get_status':
+                await ws.send(json.dumps({
+                    'type': 'hwcal_status',
+                    **self.sfcw.load_calibration_status(),
+                }))
+
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))
 
@@ -192,6 +236,40 @@ class SDRServer:
                 self.sfcw_queue.put_nowait(data)
             except asyncio.QueueFull:
                 pass
+
+    def _hwcal_callback(self, data):
+        """Callback for hardware calibration sweeps."""
+        if isinstance(data, dict) and data.get('type') == 'calibration_raw':
+            # Save calibration data to disk
+            mode = data['mode']
+            self.sfcw.save_calibration(mode, data, step_size_cm=self._hwcal_step_size_cm)
+            # Convert to broadcast-friendly format
+            h_cal = data['h_complex']
+            freqs_ghz = data['frequencies'] / 1e9
+            magnitudes_db = 20 * np.log10(np.abs(h_cal) + 1e-12)
+            result = {
+                'type': 'hwcal_result',
+                'mode': mode,
+                'frequencies': [round(f, 6) for f in freqs_ghz.tolist()],
+                'magnitudes_db': [round(m, 2) for m in magnitudes_db.tolist()],
+                'timestamp': data['timestamp'],
+            }
+            # Also include updated status
+            result['status'] = self.sfcw.load_calibration_status()
+            try:
+                self.sfcw_queue.put_nowait(result)
+            except asyncio.QueueFull:
+                try:
+                    self.sfcw_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    self.sfcw_queue.put_nowait(result)
+                except asyncio.QueueFull:
+                    pass
+        else:
+            # Progress messages and errors go through the same queue
+            self._sfcw_callback(data)
 
     async def _sfcw_broadcast_loop(self):
         while True:
@@ -221,6 +299,8 @@ class SDRServer:
                 if 'phase_coherence' in data:
                     result_msg['phase_coherence'] = data['phase_coherence']
                 msg = json.dumps(result_msg)
+            elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
+                msg = json.dumps(data)
             else:
                 continue
 

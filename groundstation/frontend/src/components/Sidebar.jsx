@@ -1,17 +1,19 @@
-import { Activity, Eye, Radio, Radar, ScanLine, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
+import HwCalPanel from './HwCalPanel';
 
 const PANELS = [
-  { id: 'imu',       label: 'IMU',       icon: Activity },
-  { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
-  { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
-  { id: 'sfcw',      label: 'SFCW',      icon: Radar },
-  { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
+  { id: 'imu',       label: 'IMU',       icon: Activity,  accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'optiflow',  label: 'OptiFlow',  icon: Eye,       accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio,  accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'sfcw',      label: 'SFCW',      icon: Radar,     accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'bscan',     label: 'B-Scan',    icon: ScanLine,  accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'hwcal',     label: 'HW Cal',    icon: Wrench,    accent: '#A78BFA', accentTo: '#C4B5FD' },
 ];
 
 export default function Sidebar({
@@ -49,6 +51,8 @@ export default function Sidebar({
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
+  hwCalStatus,
+  onHwCalAction,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -73,7 +77,7 @@ export default function Sidebar({
         <div className="w-6 h-px bg-white/5 my-1" />
 
         {/* Nav icons */}
-        {PANELS.map(({ id, label, icon: Icon }) => {
+        {PANELS.map(({ id, label, icon: Icon, accent, accentTo }) => {
           const isActive = activePanel === id;
           return (
             <button
@@ -83,16 +87,17 @@ export default function Sidebar({
               className={cn(
                 'relative flex items-center justify-center w-10 h-10 rounded-xl',
                 'transition-all duration-300 cursor-pointer',
-                isActive ? 'bg-[#D1855C]/8' : 'hover:bg-white/4',
+                !isActive && 'hover:bg-white/4',
               )}
+              style={isActive ? { backgroundColor: `${accent}14` } : undefined}
             >
               {isActive && (
-                <div className="absolute left-0 w-[2px] h-5 rounded-r-full bg-gradient-to-b from-[#D1855C] to-[#E5A986]" />
+                <div className="absolute left-0 w-[2px] h-5 rounded-r-full" style={{ background: `linear-gradient(to bottom, ${accent}, ${accentTo})` }} />
               )}
               <Icon
                 size={17}
                 strokeWidth={isActive ? 2.2 : 1.8}
-                className={isActive ? 'text-[#D1855C]' : 'text-[#555555]'}
+                style={{ color: isActive ? accent : '#555555' }}
               />
             </button>
           );
@@ -133,11 +138,11 @@ export default function Sidebar({
           <div className="p-5 animate-fadeIn" style={{ minWidth: 276 }}>
 
             {/* Ambient glow */}
-            <div className="absolute top-0 left-0 w-40 h-40 bg-[#D1855C]/5 blur-[70px] rounded-full pointer-events-none" />
+            <div className="absolute top-0 left-0 w-40 h-40 blur-[70px] rounded-full pointer-events-none" style={{ backgroundColor: `${PANELS.find(p => p.id === activePanel)?.accent || '#D1855C'}0d` }} />
 
             {/* Panel header */}
             <div className="relative flex items-center gap-3 mb-5">
-              <div className="w-px h-3.5 bg-gradient-to-b from-[#D1855C] to-[#E5A986] rounded-full" />
+              <div className="w-px h-3.5 rounded-full" style={{ background: `linear-gradient(to bottom, ${PANELS.find(p => p.id === activePanel)?.accent || '#D1855C'}, ${PANELS.find(p => p.id === activePanel)?.accentTo || '#E5A986'})` }} />
               <span className="text-xs font-bold uppercase tracking-widest text-[#888888]">
                 {PANELS.find(p => p.id === activePanel)?.label}
               </span>
@@ -205,6 +210,15 @@ export default function Sidebar({
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
                   sfcwParams={sfcwParams}
+                />
+              )}
+              {activePanel === 'hwcal' && (
+                <HwCalPanel
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
+                  sendSdr={sendSdr}
+                  calStatus={hwCalStatus}
+                  onCalAction={onHwCalAction}
                 />
               )}
             </div>

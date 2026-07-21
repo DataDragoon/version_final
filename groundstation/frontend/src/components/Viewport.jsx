@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, Zap } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, Zap } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -7,6 +7,7 @@ import ReceiverDisplay from './ReceiverDisplay';
 import FftDisplay from './FftDisplay';
 import SfcwDisplay from './SfcwDisplay';
 import BscanDisplay from './BscanDisplay';
+import HwCalDisplay from './HwCalDisplay';
 
 export default function Viewport({
   activePanel,
@@ -27,6 +28,8 @@ export default function Viewport({
   bscanParams,
   bscanCapturing,
   sfcwParams,
+  hwCalResult,
+  hwCalMode,
 }) {
   if (!activePanel) {
     return (
@@ -192,6 +195,29 @@ export default function Viewport({
     );
   }
 
+  if (activePanel === 'hwcal') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Wrench} label="HW Calibration" active={!!hwCalResult} color="violet" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {hwCalResult && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#A78BFA]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <HwCalDisplay calResult={hwCalResult} calMode={hwCalMode} />
+            {!hwCalResult && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No calibration data</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -200,6 +226,7 @@ function PaneHeader({ icon: Icon, label, active, color }) {
     orange: { accent: '#D1855C', to: '#E5A986' },
     cyan:   { accent: '#22d3ee', to: '#67e8f9' },
     green:  { accent: '#4aff8a', to: '#86efac' },
+    violet: { accent: '#A78BFA', to: '#C4B5FD' },
   };
   const { accent, to } = colorMap[color] || colorMap.orange;
 

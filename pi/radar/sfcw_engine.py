@@ -8,6 +8,8 @@ phase reference (short cable loopback). Dividing signal by reference
 eliminates random PLL phase offsets between TX and RX synthesizers.
 """
 
+import json
+import os
 import threading
 import time
 import numpy as np
@@ -17,6 +19,7 @@ from bladerf._bladerf import libbladeRF, ffi
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
+CALIBRATION_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'calibration')
 
 
 class SFCWEngine:
@@ -42,6 +45,7 @@ class SFCWEngine:
         self._single_shot = False
         self._background = None
         self._capture_background = False
+        self._cal_mode = None
 
     @property
     def num_steps(self):
@@ -323,3 +327,331 @@ class SFCWEngine:
                 'slope_rad_per_step': float(coeffs[0]),
             },
         }
+
+    # ------------------------------------------------------------------
+    # Hardware calibration
+    # ------------------------------------------------------------------
+
+    def run_calibration(self, mode, callback):
+        """Run a calibration sweep. mode: 'cable_thru', 'free_space', 'per_position'.
+
+        Stops any running sweep first, then performs a single sweep collecting
+        raw complex data. Results are passed to callback and saved to disk.
+        """
+        if self.running:
+            self.stop()
+        self._callback = callback
+        self._stop_event.clear()
+        self._single_shot = True
+        self._cal_mode = mode
+        self.running = True
+        self._thread = threading.Thread(target=self._calibration_loop, daemon=True)
+        self._thread.start()
+
+    def _calibration_loop(self):
+        try:
+            self._configure_hardware_for_cal()
+            self._start_tx_rx_for_cal()
+
+            result = self._perform_calibration_sweep()
+            if result is not None and self._callback:
+                self._callback(result)
+
+        except Exception as e:
+            print(f"[sfcw] Calibration error: {e}")
+            if self._callback:
+                self._callback({'error': str(e)})
+        finally:
+            self._stop_tx_rx()
+            self.running = False
+            self._cal_mode = None
+
+    def _configure_hardware_for_cal(self):
+        mode = self._cal_mode
+        if mode == 'cable_thru':
+            # Fixed gains for cable-through calibration
+            self.driver.tx_gain = 20
+            self.driver.rx_gain = 20
+            self.driver.tx2_gain = 20
+            self.driver.rx2_gain = 20
+        else:
+            # free_space / per_position use current params
+            self.driver.tx_gain = self.tx1_gain
+            self.driver.rx_gain = self.rx1_gain
+            self.driver.tx2_gain = self.tx2_gain
+            self.driver.rx2_gain = self.rx2_gain
+        self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
+        self.driver._configure_channels_dual()
+
+    def _start_tx_rx_for_cal(self):
+        mode = self._cal_mode
+        self._rx_latest = (None, None)
+        self._rx_event = threading.Event()
+        n = 1024
+        t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
+        self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
+        self.driver.start_tx_dual()
+        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        time.sleep(0.05)
+
+        dev_ptr = self.driver.device.dev[0]
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
+
+        if mode == 'cable_thru':
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), 20)
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), 20)
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), 20)
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), 20)
+        else:
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+
+    def _perform_calibration_sweep(self):
+        """Perform a single sweep collecting raw complex data for calibration."""
+        mode = self._cal_mode
+
+        with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            step = self.step_size
+            settle = self.settle_time
+            num_buffers = self.num_buffers
+
+        num_steps = int((stop - start) / step) + 1
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+        rx_ch1 = bladerf.CHANNEL_RX(1)
+
+        # Gain ramp: cable_thru uses fixed gain, others use dynamic ramp
+        if mode == 'cable_thru':
+            rx_gains = np.full(num_steps, 20, dtype=int)
+        else:
+            freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
+            rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+
+        for i in range(num_steps):
+            if self._stop_event.is_set():
+                return None
+
+            f = int(freqs[i])
+            g = int(rx_gains[i])
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
+            time.sleep(settle)
+
+            # Discard first buffer
+            self._rx_event.clear()
+            self._rx_event.wait(timeout=1.0)
+
+            sig_accum = 0j
+            ref_accum = 0j
+            captured = 0
+            for _ in range(num_buffers):
+                self._rx_event.clear()
+                if not self._rx_event.wait(timeout=1.0):
+                    break
+
+                rx1, rx2 = self._rx_latest
+                if rx1 is None or rx2 is None:
+                    continue
+
+                i1 = rx1[0::2].astype(np.float64) / 2047.0
+                q1 = rx1[1::2].astype(np.float64) / 2047.0
+                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
+
+                i2 = rx2[0::2].astype(np.float64) / 2047.0
+                q2 = rx2[1::2].astype(np.float64) / 2047.0
+                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
+
+                captured += 1
+
+            h_signal[i] = sig_accum / max(captured, 1)
+            h_reference[i] = ref_accum / max(captured, 1)
+
+            if self._callback and i % 10 == 0:
+                self._callback({
+                    'type': 'progress',
+                    'step': i,
+                    'total': num_steps,
+                    'freq_mhz': freqs[i] / 1e6,
+                })
+
+        # Phase-reference division (no background subtraction, no windowing/IFFT)
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        timestamp = time.time()
+
+        return {
+            'type': 'calibration_raw',
+            'mode': mode,
+            'frequencies': freqs,
+            'h_complex': h_cal,
+            'h_signal_raw': h_signal,
+            'h_reference_raw': h_reference,
+            'timestamp': timestamp,
+        }
+
+    def save_calibration(self, mode, data, step_size_cm=None):
+        """Save calibration data to .npz file.
+
+        Args:
+            mode: 'cable_thru', 'free_space', or 'per_position'
+            data: dict from _perform_calibration_sweep
+            step_size_cm: spatial step size (per_position only)
+        """
+        os.makedirs(CALIBRATION_DIR, exist_ok=True)
+
+        params = {
+            'start_freq': self.start_freq,
+            'stop_freq': self.stop_freq,
+            'step_size': self.step_size,
+            'settle_time': self.settle_time,
+            'num_buffers': self.num_buffers,
+            'tx1_gain': self.tx1_gain if mode != 'cable_thru' else 20,
+            'rx1_gain': self.rx1_gain if mode != 'cable_thru' else 20,
+            'tx2_gain': self.tx2_gain if mode != 'cable_thru' else 20,
+            'rx2_gain': self.rx2_gain if mode != 'cable_thru' else 20,
+            'rx_gain_min': self.rx_gain_min,
+            'rx_gain_max': self.rx_gain_max,
+            'mode': mode,
+        }
+
+        filepath = os.path.join(CALIBRATION_DIR, f'{mode}.npz')
+
+        if mode == 'per_position':
+            # Append to existing file or create new
+            existing = self._load_per_position_data()
+            if existing is not None:
+                h_complex_list = np.vstack([existing['h_complex'], data['h_complex'][np.newaxis, :]])
+                h_signal_list = np.vstack([existing['h_signal_raw'], data['h_signal_raw'][np.newaxis, :]])
+                h_reference_list = np.vstack([existing['h_reference_raw'], data['h_reference_raw'][np.newaxis, :]])
+                timestamps = np.append(existing['timestamp'], data['timestamp'])
+            else:
+                h_complex_list = data['h_complex'][np.newaxis, :]
+                h_signal_list = data['h_signal_raw'][np.newaxis, :]
+                h_reference_list = data['h_reference_raw'][np.newaxis, :]
+                timestamps = np.array([data['timestamp']])
+
+            save_kwargs = {
+                'frequencies': data['frequencies'],
+                'h_complex': h_complex_list,
+                'h_signal_raw': h_signal_list,
+                'h_reference_raw': h_reference_list,
+                'params': json.dumps(params),
+                'timestamp': timestamps,
+            }
+            if step_size_cm is not None:
+                save_kwargs['step_size_cm'] = np.array(step_size_cm)
+            np.savez(filepath, **save_kwargs)
+        else:
+            np.savez(filepath,
+                     frequencies=data['frequencies'],
+                     h_complex=data['h_complex'],
+                     h_signal_raw=data['h_signal_raw'],
+                     h_reference_raw=data['h_reference_raw'],
+                     params=json.dumps(params),
+                     timestamp=np.array(data['timestamp']))
+
+        print(f"[sfcw] Calibration saved: {filepath}")
+
+    def _load_per_position_data(self):
+        """Load existing per_position.npz data, or return None."""
+        filepath = os.path.join(CALIBRATION_DIR, 'per_position.npz')
+        if not os.path.exists(filepath):
+            return None
+        try:
+            npz = np.load(filepath, allow_pickle=True)
+            return {
+                'h_complex': npz['h_complex'],
+                'h_signal_raw': npz['h_signal_raw'],
+                'h_reference_raw': npz['h_reference_raw'],
+                'timestamp': npz['timestamp'],
+            }
+        except Exception as e:
+            print(f"[sfcw] Error loading per_position data: {e}")
+            return None
+
+    def load_calibration_status(self):
+        """Check which calibration files exist and return status dict."""
+        status = {
+            'cable_thru': None,
+            'free_space': None,
+            'per_position': None,
+        }
+
+        for mode in ['cable_thru', 'free_space']:
+            filepath = os.path.join(CALIBRATION_DIR, f'{mode}.npz')
+            if os.path.exists(filepath):
+                try:
+                    npz = np.load(filepath, allow_pickle=True)
+                    ts = float(npz['timestamp'])
+                    status[mode] = {'timestamp': ts}
+                except Exception:
+                    pass
+
+        filepath = os.path.join(CALIBRATION_DIR, 'per_position.npz')
+        if os.path.exists(filepath):
+            try:
+                npz = np.load(filepath, allow_pickle=True)
+                h = npz['h_complex']
+                count = h.shape[0] if h.ndim == 2 else 1
+                step_size_cm = float(npz['step_size_cm']) if 'step_size_cm' in npz else None
+                status['per_position'] = {
+                    'count': count,
+                    'step_size_cm': step_size_cm,
+                }
+            except Exception:
+                pass
+
+        return status
+
+    def clear_per_position(self):
+        """Reset per-position calibration (delete file)."""
+        filepath = os.path.join(CALIBRATION_DIR, 'per_position.npz')
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            print("[sfcw] Per-position calibration cleared")
+
+    def undo_per_position(self):
+        """Remove last position from per-position calibration."""
+        filepath = os.path.join(CALIBRATION_DIR, 'per_position.npz')
+        if not os.path.exists(filepath):
+            return
+
+        try:
+            npz = np.load(filepath, allow_pickle=True)
+            h_complex = npz['h_complex']
+            if h_complex.ndim < 2 or h_complex.shape[0] <= 1:
+                # Only one position, just delete the file
+                os.remove(filepath)
+                print("[sfcw] Per-position calibration cleared (was single position)")
+                return
+
+            # Remove last row
+            save_kwargs = {
+                'frequencies': npz['frequencies'],
+                'h_complex': h_complex[:-1],
+                'h_signal_raw': npz['h_signal_raw'][:-1],
+                'h_reference_raw': npz['h_reference_raw'][:-1],
+                'params': str(npz['params']),
+                'timestamp': npz['timestamp'][:-1],
+            }
+            if 'step_size_cm' in npz:
+                save_kwargs['step_size_cm'] = npz['step_size_cm']
+            np.savez(filepath, **save_kwargs)
+            print(f"[sfcw] Per-position calibration: removed last position ({h_complex.shape[0] - 1} remaining)")
+        except Exception as e:
+            print(f"[sfcw] Error undoing per-position: {e}")

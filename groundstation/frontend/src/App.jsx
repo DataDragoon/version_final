@@ -58,6 +58,17 @@ export default function App() {
     numPositions: 20,
   });
 
+  // HW Calibration state
+  const [hwCalStatus, setHwCalStatus] = useState({
+    cableThru: null,
+    freeSpace: null,
+    perPosition: { positions: [], stepSize: 5, numPositions: 20 },
+    _capturing: null, // 'cable_thru' | 'free_space' | 'per_position' | null
+  });
+  const [hwCalResult, setHwCalResult] = useState(null);
+  const [hwCalMode, setHwCalMode] = useState(null);
+  const hwCalPendingRef = useRef(null);
+
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
     imuCountRef.current++;
@@ -121,6 +132,43 @@ export default function App() {
         bscanPendingRef.current = null;
         setBscanCapturing(false);
       }
+    } else if (msg.type === 'hwcal_result') {
+      const mode = msg.mode; // 'cable_thru' | 'free_space' | 'per_position'
+      setHwCalMode(mode);
+      if (mode === 'per_position') {
+        setHwCalStatus(prev => ({
+          ...prev,
+          _capturing: null,
+          perPosition: {
+            ...prev.perPosition,
+            positions: [...prev.perPosition.positions, msg.magnitudes_db],
+          },
+        }));
+        setHwCalResult(prev => ({
+          frequencies: msg.frequencies,
+          traces: [...(prev && prev.traces ? prev.traces : []), msg.magnitudes_db],
+        }));
+      } else {
+        const key = mode === 'cable_thru' ? 'cableThru' : 'freeSpace';
+        setHwCalStatus(prev => ({
+          ...prev,
+          _capturing: null,
+          [key]: { timestamp: msg.timestamp || Date.now() },
+        }));
+        setHwCalResult({ frequencies: msg.frequencies, magnitudes_db: msg.magnitudes_db });
+      }
+    } else if (msg.type === 'hwcal_status') {
+      setHwCalStatus(prev => ({
+        ...prev,
+        _capturing: prev._capturing,
+        cableThru: msg.cable_thru,
+        freeSpace: msg.free_space,
+        perPosition: {
+          ...prev.perPosition,
+          positions: msg.per_position ? new Array(msg.per_position.count).fill(null) : prev.perPosition.positions,
+          stepSize: msg.per_position?.step_size || prev.perPosition.stepSize,
+        },
+      }));
     }
   }, []);
 
@@ -143,6 +191,46 @@ export default function App() {
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
+    }
+  }, [sendSdr]);
+
+  const handleHwCalAction = useCallback((action, params) => {
+    if (action === 'capture_cable_thru') {
+      setHwCalStatus(prev => ({ ...prev, _capturing: 'cable_thru' }));
+      sendSdr({ cmd: 'hwcal_capture', mode: 'cable_thru' });
+    } else if (action === 'capture_free_space') {
+      setHwCalStatus(prev => ({ ...prev, _capturing: 'free_space' }));
+      sendSdr({ cmd: 'hwcal_capture', mode: 'free_space' });
+    } else if (action === 'capture_per_position') {
+      setHwCalStatus(prev => ({ ...prev, _capturing: 'per_position' }));
+      sendSdr({ cmd: 'hwcal_capture', mode: 'per_position' });
+    } else if (action === 'per_position_new') {
+      setHwCalStatus(prev => ({
+        ...prev,
+        perPosition: { ...prev.perPosition, positions: [] },
+      }));
+      setHwCalResult(null);
+      setHwCalMode(null);
+      sendSdr({ cmd: 'hwcal_per_position_new' });
+    } else if (action === 'per_position_undo') {
+      setHwCalStatus(prev => ({
+        ...prev,
+        perPosition: { ...prev.perPosition, positions: prev.perPosition.positions.slice(0, -1) },
+      }));
+      setHwCalResult(prev => prev && prev.traces ? { ...prev, traces: prev.traces.slice(0, -1) } : prev);
+      sendSdr({ cmd: 'hwcal_per_position_undo' });
+    } else if (action === 'refresh_status') {
+      sendSdr({ cmd: 'hwcal_get_status' });
+    } else if (action === 'per_position_set_step') {
+      setHwCalStatus(prev => ({
+        ...prev,
+        perPosition: { ...prev.perPosition, stepSize: params.stepSize },
+      }));
+    } else if (action === 'per_position_set_num') {
+      setHwCalStatus(prev => ({
+        ...prev,
+        perPosition: { ...prev.perPosition, numPositions: params.numPositions },
+      }));
     }
   }, [sendSdr]);
 
@@ -225,6 +313,8 @@ export default function App() {
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
+        hwCalStatus={hwCalStatus}
+        onHwCalAction={handleHwCalAction}
       />
       <Viewport
         activePanel={activePanel}
@@ -245,6 +335,8 @@ export default function App() {
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
         sfcwParams={sfcwParams}
+        hwCalResult={hwCalResult}
+        hwCalMode={hwCalMode}
       />
     </div>
   );

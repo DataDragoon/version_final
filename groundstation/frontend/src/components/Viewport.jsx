@@ -26,6 +26,7 @@ export default function Viewport({
   bscanData,
   bscanParams,
   bscanCapturing,
+  sfcwParams,
 }) {
   if (!activePanel) {
     return (
@@ -147,6 +148,7 @@ export default function Viewport({
               sfcwResult={sfcwResult}
               sfcwProgress={sfcwProgress}
               sfcwRunning={sfcwRunning}
+              dbCeil={sfcwParams.dbCeil}
             />
             {!sfcwResult && !sfcwRunning && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -175,6 +177,7 @@ export default function Viewport({
               params={bscanParams}
               capturing={bscanCapturing}
               sfcwProgress={sfcwProgress}
+              dbCeil={sfcwParams.dbCeil}
             />
             {bscanData.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

@@ -44,6 +44,7 @@ export default function App() {
     tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.45,
+    dbCeil: -20,
   });
 
   // B-Scan state
@@ -242,6 +243,7 @@ export default function App() {
         bscanData={bscanData}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
+        sfcwParams={sfcwParams}
       />
     </div>
   );

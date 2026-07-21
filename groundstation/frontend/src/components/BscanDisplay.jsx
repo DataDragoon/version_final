@@ -3,12 +3,13 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
 
-function viridis(t) {
+function jet(t) {
   t = Math.max(0, Math.min(1, t));
-  const r = Math.round(255 * Math.min(1, Math.max(0, -0.0069 + t * (0.116 + t * (5.311 + t * (-15.17 + t * (13.39 + t * -4.13)))))));
-  const g = Math.round(255 * Math.min(1, Math.max(0, 0.0003 + t * (0.115 + t * (-0.888 + t * (4.451 + t * (-5.90 + t * 2.78)))))));
-  const b = Math.round(255 * Math.min(1, Math.max(0, 0.324 + t * (1.442 + t * (-3.193 + t * (4.197 + t * (-2.88 + t * 0.695)))))));
-  return [r, g, b];
+  return [
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 3)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 2)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 1)))),
+  ];
 }
 
 export default function BscanDisplay({ scanData, params, capturing, sfcwProgress }) {
@@ -63,7 +64,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
       for (let binIdx = 0; binIdx < numBins; binIdx++) {
         const db = mags[binIdx];
         const t = (db - dbMin) / (dbMax - dbMin);
-        const [r, g, b] = viridis(t);
+        const [r, g, b] = jet(t);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         const x = pad.left + posIdx * cellW;
         const y = pad.top + binIdx * cellH;
@@ -150,7 +151,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     const barY = pad.top;
     for (let i = 0; i < barH; i++) {
       const t = 1 - i / barH;
-      const [r, g, b] = viridis(t);
+      const [r, g, b] = jet(t);
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(barX, barY + i, barW, 1);
     }

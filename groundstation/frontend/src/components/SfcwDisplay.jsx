@@ -1,27 +1,23 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { cn } from '@/lib/utils';
 
-const WATERFALL_ROWS = 128;
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
 const TRACE_COLOR = '#D1855C';
 const PEAK_COLOR = '#E5A986';
-const WATERFALL_COLD = [0, 0, 0];
-const WATERFALL_HOT = [209, 133, 92];
 
-function lerpColor(cold, hot, t) {
-  const c = Math.max(0, Math.min(1, t));
+function jet(t) {
+  t = Math.max(0, Math.min(1, t));
   return [
-    Math.round(cold[0] + (hot[0] - cold[0]) * c),
-    Math.round(cold[1] + (hot[1] - cold[1]) * c),
-    Math.round(cold[2] + (hot[2] - cold[2]) * c),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 3)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 2)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 1)))),
   ];
 }
 
 export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   const rangeCanvasRef = useRef(null);
-  const waterfallCanvasRef = useRef(null);
-  const waterfallData = useRef([]);
+  const colormapCanvasRef = useRef(null);
   const animRef = useRef(null);
   const latestResult = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -29,11 +25,6 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   useEffect(() => {
     if (sfcwResult) {
       latestResult.current = sfcwResult;
-      const row = sfcwResult.magnitudes.slice();
-      waterfallData.current.unshift(row);
-      if (waterfallData.current.length > WATERFALL_ROWS) {
-        waterfallData.current.length = WATERFALL_ROWS;
-      }
     }
   }, [sfcwResult]);
 
@@ -185,8 +176,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     }
   }, [crosshair]);
 
-  const drawLinear = useCallback(() => {
-    const canvas = waterfallCanvasRef.current;
+  const drawColormap = useCallback(() => {
+    const canvas = colormapCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -209,78 +200,75 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       return;
     }
 
-    // Convert dB to linear
-    const magsDb = result.magnitudes;
-    const mags = magsDb.map(db => Math.pow(10, db / 20));
+    const mags = result.magnitudes;
     const dists = result.distances;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = Math.pow(10, -60 / 20);  // 0.001
-    const magMax = Math.pow(10, 40 / 20);   // 100.0
+    const dbMin = -40;
+    const dbMax = 20;
 
-    // Grid
-    ctx.strokeStyle = GRID_COLOR;
-    ctx.lineWidth = 0.5;
-    const yTicks = 5;
-    for (let i = 0; i <= yTicks; i++) {
-      const y = pad.top + (i / yTicks) * plotH;
-      ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(w - pad.right, y);
-      ctx.stroke();
-      const val = magMax - (i / yTicks) * (magMax - magMin);
-      ctx.fillStyle = '#555555';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${val.toFixed(2)}`, pad.left - 6, y + 3);
+    // Draw horizontal colormap strip — each bin is a colored column
+    const cellW = plotW / n;
+    for (let i = 0; i < n; i++) {
+      const t = (mags[i] - dbMin) / (dbMax - dbMin);
+      const [r, g, b] = jet(t);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const x = pad.left + i * cellW;
+      ctx.fillRect(x, pad.top, Math.ceil(cellW) + 1, plotH);
     }
 
+    // X-axis labels (distance)
     const maxDist = dists[dists.length - 1];
     const xTicks = 6;
+    ctx.fillStyle = '#555555';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
     for (let i = 0; i <= xTicks; i++) {
       const x = pad.left + (i / xTicks) * plotW;
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, h - pad.bottom);
-      ctx.stroke();
       const dist = (i / xTicks) * maxDist;
-      ctx.fillStyle = '#555555';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'center';
       ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
     }
 
-    // Trace
-    ctx.beginPath();
-    ctx.strokeStyle = '#6B9BD2';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < n; i++) {
-      const x = pad.left + (i / (n - 1)) * plotW;
-      const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    // Color bar legend (vertical, right side)
+    const barW = 10;
+    const barX = w - pad.right + 4;
+    const barH = plotH;
+    for (let i = 0; i < barH; i++) {
+      const t = 1 - i / barH;
+      const [r, g, b] = jet(t);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(barX, pad.top + i, barW, 1);
     }
-    ctx.stroke();
+    ctx.fillStyle = '#555555';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${dbMax}`, barX, pad.top - 4);
+    ctx.fillText(`${dbMin}`, barX, pad.top + barH + 10);
 
     // Title
     ctx.fillStyle = '#6B9BD2';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('LINEAR SCALE', pad.left, 14);
+    ctx.fillText('COLORMAP', pad.left, 14);
+
+    ctx.fillStyle = '#444444';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${dbMin} to ${dbMax} dB`, w - pad.right - 16, 14);
   }, []);
 
   useEffect(() => {
     const render = () => {
       drawRange();
-      drawLinear();
+      drawColormap();
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawRange, drawLinear]);
+  }, [drawRange, drawColormap]);
 
   const handleMouseMove = (e) => {
     const rect = rangeCanvasRef.current?.getBoundingClientRect();
@@ -302,7 +290,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         </div>
       )}
 
-      {/* Range Profile (phase corrected) */}
+      {/* Range Profile */}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={rangeCanvasRef}
@@ -312,10 +300,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         />
       </div>
 
-      {/* Raw Range Profile (no phase correction) */}
-      <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
+      {/* Colormap strip */}
+      <div className="relative border-t border-white/5" style={{ flex: '0 0 25%' }}>
         <canvas
-          ref={waterfallCanvasRef}
+          ref={colormapCanvasRef}
           className="absolute inset-0 w-full h-full"
         />
       </div>

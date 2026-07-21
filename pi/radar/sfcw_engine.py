@@ -46,6 +46,37 @@ class SFCWEngine:
         self._background = None
         self._capture_background = False
         self._cal_mode = None
+        # Hardware calibration data (loaded from disk)
+        self._cal_cable_thru = None
+        self._cal_free_space = None
+        self._load_hw_calibration()
+
+    def _load_hw_calibration(self):
+        """Load hardware calibration files from disk if they exist."""
+        for mode, attr in [('cable_thru', '_cal_cable_thru'), ('free_space', '_cal_free_space')]:
+            filepath = os.path.join(CALIBRATION_DIR, f'{mode}.npz')
+            if os.path.exists(filepath):
+                try:
+                    npz = np.load(filepath, allow_pickle=True)
+                    setattr(self, attr, {
+                        'frequencies': npz['frequencies'],
+                        'h_complex': npz['h_complex'],
+                    })
+                    print(f"[sfcw] Loaded {mode} calibration ({len(npz['frequencies'])} points)")
+                except Exception as e:
+                    print(f"[sfcw] Failed to load {mode} calibration: {e}")
+                    setattr(self, attr, None)
+
+    def _interpolate_cal(self, cal_data, target_freqs):
+        """Interpolate stored calibration H(f) onto the current sweep's frequency grid."""
+        cal_freqs = cal_data['frequencies']
+        cal_h = cal_data['h_complex']
+        # Interpolate magnitude and phase separately to avoid wrapping issues
+        cal_mag = np.abs(cal_h)
+        cal_phase = np.unwrap(np.angle(cal_h))
+        mag_interp = np.interp(target_freqs, cal_freqs, cal_mag)
+        phase_interp = np.interp(target_freqs, cal_freqs, cal_phase)
+        return mag_interp * np.exp(1j * phase_interp)
 
     @property
     def num_steps(self):
@@ -285,7 +316,22 @@ class SFCWEngine:
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        # Background subtraction: removes TX->RX coupling and static clutter
+        # Hardware calibration corrections
+        if self._cal_cable_thru is not None:
+            ct = self._interpolate_cal(self._cal_cable_thru, freqs)
+            ct_mag = np.abs(ct)
+            ct_valid = ct_mag > 1e-10
+            h_cal[ct_valid] = h_cal[ct_valid] / ct[ct_valid]
+
+        if self._cal_free_space is not None:
+            fs = self._interpolate_cal(self._cal_free_space, freqs)
+            # Apply cable thru correction to free-space data too (it was measured
+            # through the same system response)
+            if self._cal_cable_thru is not None:
+                fs[ct_valid] = fs[ct_valid] / ct[ct_valid]
+            h_cal = h_cal - fs
+
+        # Background subtraction: removes remaining static clutter
         if self._capture_background:
             self._background = h_cal.copy()
             self._capture_background = False
@@ -566,6 +612,7 @@ class SFCWEngine:
                      timestamp=np.array(data['timestamp']))
 
         print(f"[sfcw] Calibration saved: {filepath}")
+        self._load_hw_calibration()
 
     def _load_per_position_data(self):
         """Load existing per_position.npz data, or return None."""

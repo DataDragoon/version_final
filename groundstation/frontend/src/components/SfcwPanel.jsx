@@ -186,6 +186,42 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           </button>
         </div>
       </Section>
+
+      {/* Mean Subtraction */}
+      <Section label="Mean Subtraction">
+        <div className="flex items-center justify-between px-1 mb-2">
+          <span className="text-[10px] text-[#888] uppercase tracking-wider">
+            {sfcwStatus?.mean_subtraction
+              ? `Active — ${sfcwStatus.mean_count || 0} sweeps`
+              : 'Disabled'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => sendSdr({ cmd: sfcwStatus?.mean_subtraction ? 'sfcw_mean_disable' : 'sfcw_mean_enable' })}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              sfcwStatus?.mean_subtraction
+                ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C] hover:bg-[#D1855C]/20'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            {sfcwStatus?.mean_subtraction ? 'Disable' : 'Enable'}
+          </button>
+          <button
+            onClick={() => sendSdr({ cmd: 'sfcw_mean_reset' })}
+            disabled={!sfcwStatus?.mean_subtraction}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              sfcwStatus?.mean_subtraction
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
+          >
+            Reset Mean
+          </button>
+        </div>
+      </Section>
     </>
   );
 }

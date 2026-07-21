@@ -49,7 +49,12 @@ class SFCWEngine:
         # Hardware calibration data (loaded from disk)
         self._cal_cable_thru = None
         self._cal_free_space = None
+        self._cal_cable_thru_enabled = False  # disabled — causes ringing artifacts
         self._load_hw_calibration()
+        # Running mean subtraction state
+        self._mean_accumulator = None
+        self._mean_count = 0
+        self._mean_subtraction_enabled = False
 
     def _load_hw_calibration(self):
         """Load hardware calibration files from disk if they exist."""
@@ -144,6 +149,8 @@ class SFCWEngine:
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
             'background_active': self._background is not None,
+            'mean_subtraction': self._mean_subtraction_enabled,
+            'mean_count': self._mean_count,
         }
 
     def capture_background(self):
@@ -152,6 +159,18 @@ class SFCWEngine:
     def clear_background(self):
         self._background = None
         self._capture_background = False
+
+    def enable_mean_subtraction(self):
+        self._mean_subtraction_enabled = True
+        self._mean_accumulator = None
+        self._mean_count = 0
+
+    def disable_mean_subtraction(self):
+        self._mean_subtraction_enabled = False
+
+    def reset_mean(self):
+        self._mean_accumulator = None
+        self._mean_count = 0
 
     def start(self, callback):
         if self.running:
@@ -317,19 +336,30 @@ class SFCWEngine:
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
         # Hardware calibration corrections
-        if self._cal_cable_thru is not None:
+        if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
             ct = self._interpolate_cal(self._cal_cable_thru, freqs)
             ct_mag = np.abs(ct)
-            ct_valid = ct_mag > 1e-10
-            h_cal[ct_valid] = h_cal[ct_valid] / ct[ct_valid]
+            noise_floor = np.max(ct_mag) * 0.05
+            regularizer = ct_mag**2 / (ct_mag**2 + noise_floor**2)
+            ct_safe = np.where(ct_mag > 1e-10, ct, 1.0)
+            h_cal = h_cal / ct_safe * regularizer
 
         if self._cal_free_space is not None:
             fs = self._interpolate_cal(self._cal_free_space, freqs)
-            # Apply cable thru correction to free-space data too (it was measured
-            # through the same system response)
-            if self._cal_cable_thru is not None:
-                fs[ct_valid] = fs[ct_valid] / ct[ct_valid]
+            if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
+                fs = fs / ct_safe * regularizer
             h_cal = h_cal - fs
+
+        # Running mean subtraction: converges on static environment, reveals transients
+        if self._mean_subtraction_enabled:
+            if self._mean_accumulator is None or len(self._mean_accumulator) != num_steps:
+                self._mean_accumulator = h_cal.copy()
+                self._mean_count = 1
+            else:
+                self._mean_count += 1
+                alpha = 1.0 / self._mean_count
+                self._mean_accumulator = (1 - alpha) * self._mean_accumulator + alpha * h_cal
+            h_cal = h_cal - self._mean_accumulator
 
         # Background subtraction: removes remaining static clutter
         if self._capture_background:

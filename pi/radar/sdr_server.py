@@ -143,6 +143,18 @@ class SDRServer:
             elif action == 'sfcw_clear_bg':
                 self.sfcw.clear_background()
 
+            elif action == 'sfcw_mean_enable':
+                self.sfcw.enable_mean_subtraction()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_mean_disable':
+                self.sfcw.disable_mean_subtraction()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_mean_reset':
+                self.sfcw.reset_mean()
+                await self._broadcast_sfcw_status()
+
             elif action == 'sfcw_get_status':
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 

@@ -88,34 +88,31 @@ class SFCWEngine:
     def _aligned_subtraction(self, h_current, h_reference, freqs, step_size):
         """Subtract reference after aligning to the dominant reflector (wall).
 
-        Estimates the range shift between current and reference by fitting
-        a linear phase slope to the ratio h_current/h_reference in the
-        frequency domain. This directly measures the time delay difference
-        with sub-sample precision, then applies the inverse phase ramp to
-        the reference before subtracting.
+        Estimates the complex transfer function between current and reference
+        by fitting a linear phase model + amplitude scaling to their ratio.
+        This corrects for both range shift (phase slope) and gain variation
+        (amplitude change) between the two measurements.
         """
         n = len(h_current)
 
-        # Compute the ratio — if only the wall shifted, this ratio's phase
-        # is a linear ramp whose slope encodes the range shift
+        # Compute the ratio — encodes the difference between the two scans
         ref_mag = np.abs(h_reference)
         valid = ref_mag > np.max(ref_mag) * 0.01
         ratio = np.ones(n, dtype=np.complex128)
         ratio[valid] = h_current[valid] / h_reference[valid]
 
-        # Extract phase of ratio and unwrap
-        phase_ratio = np.unwrap(np.angle(ratio))
-
-        # Fit linear slope to phase vs frequency-step-index
         # Weight by reference magnitude (trust high-SNR bins more)
         weights = ref_mag / (np.max(ref_mag) + 1e-12)
         indices = np.arange(n, dtype=np.float64)
 
-        # Weighted linear regression: phase = slope * index + intercept
+        # Extract phase of ratio and unwrap
+        phase_ratio = np.unwrap(np.angle(ratio))
+
+        # Weighted linear regression on phase: phase = slope * index + intercept
         w = weights
         sum_w = np.sum(w)
         if sum_w < 1e-12:
-            return h_current - h_reference
+            return h_current - h_reference, h_reference
 
         mean_x = np.sum(w * indices) / sum_w
         mean_y = np.sum(w * phase_ratio) / sum_w
@@ -123,14 +120,17 @@ class SFCWEngine:
         var_x = np.sum(w * (indices - mean_x)**2)
 
         if var_x < 1e-12:
-            return h_current - h_reference
+            return h_current - h_reference, h_reference
 
-        slope = cov_xy / var_x  # radians per frequency step
+        slope = cov_xy / var_x
         intercept = mean_y - slope * mean_x
 
-        # Apply the inverse phase correction to the reference
-        # This shifts the reference to match the current scan's wall position
-        correction = np.exp(1j * (slope * indices + intercept))
+        # Amplitude scaling: weighted mean of |ratio| gives the gain factor
+        ratio_mag = np.abs(ratio)
+        amp_scale = np.sum(w * ratio_mag) / sum_w
+
+        # Apply phase correction + amplitude scaling to reference
+        correction = amp_scale * np.exp(1j * (slope * indices + intercept))
         h_ref_aligned = h_reference * correction
 
         return h_current - h_ref_aligned, h_ref_aligned
@@ -448,18 +448,14 @@ class SFCWEngine:
         # Apply whichever subtraction mode is active
         ref_trace_db = None
         cur_trace_db = None
+        mag_subtraction = False
+
         if self._sub_mode == 'background' and self._background is not None and len(self._background) == num_steps:
             h_cal = h_cal - self._background
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
+            mag_subtraction = True
             h_original = h_cal.copy()
-            h_cal, h_ref_aligned = self._aligned_subtraction(h_cal, self._reference, freqs, step)
-            # Compute range profiles for current (original) and aligned reference
-            window_tmp = np.hanning(num_steps)
-            half_tmp = num_steps // 2
-            cur_profile = np.fft.ifft(h_original * window_tmp)
-            ref_profile = np.fft.ifft(h_ref_aligned * window_tmp)
-            cur_trace_db = (20 * np.log10(np.abs(cur_profile[:half_tmp]) + 1e-12)).tolist()
-            ref_trace_db = (20 * np.log10(np.abs(ref_profile[:half_tmp]) + 1e-12)).tolist()
+            _, h_ref_aligned = self._aligned_subtraction(h_cal, self._reference, freqs, step)
 
         # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)
@@ -469,14 +465,23 @@ class SFCWEngine:
         phase_std = float(np.std(residuals))
 
         window = np.hanning(num_steps)
-        h_windowed = h_cal * window
-        range_profile = np.fft.ifft(h_windowed)
-        magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
-
+        half = num_steps // 2
         max_range = SPEED_OF_LIGHT / (2 * step)
         distances = np.linspace(0, max_range, num_steps) - self.range_offset
 
-        half = num_steps // 2
+        if mag_subtraction:
+            # Magnitude-domain subtraction: |current| - |reference| in dB
+            cur_profile = np.abs(np.fft.ifft(h_original * window))
+            ref_profile = np.abs(np.fft.ifft(h_ref_aligned * window))
+            cur_db = 20 * np.log10(cur_profile + 1e-12)
+            ref_db = 20 * np.log10(ref_profile + 1e-12)
+            magnitude_db = cur_db - ref_db
+            cur_trace_db = cur_db[:half].tolist()
+            ref_trace_db = ref_db[:half].tolist()
+        else:
+            range_profile = np.fft.ifft(h_cal * window)
+            magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
+
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
 

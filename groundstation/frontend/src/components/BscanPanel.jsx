@@ -143,6 +143,30 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         </div>
       </Section>
 
+      {/* Export / Import */}
+      <Section label="Data">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => onScanAction('export')}
+            disabled={scanData.length === 0}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              scanData.length > 0
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
+          >
+            Export
+          </button>
+          <button
+            onClick={() => onScanAction('import')}
+            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+          >
+            Import
+          </button>
+        </div>
+      </Section>
+
       {/* Display Controls */}
       <Section label="Display">
         <div className="grid grid-cols-2 gap-2">

@@ -195,8 +195,47 @@ export default function App() {
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
+    } else if (action === 'export') {
+      const exportData = {
+        version: 1,
+        timestamp: new Date().toISOString(),
+        params: bscanParams,
+        sfcwParams: sfcwParams,
+        data: bscanData,
+      };
+      const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bscan_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else if (action === 'import') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            if (imported.data && Array.isArray(imported.data)) {
+              setBscanData(imported.data);
+              if (imported.params) {
+                setBscanParams(prev => ({ ...prev, ...imported.params }));
+              }
+            }
+          } catch (err) {
+            console.error('Failed to import B-scan:', err);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
     }
-  }, [sendSdr]);
+  }, [sendSdr, bscanData, bscanParams, sfcwParams]);
 
   const handleHwCalAction = useCallback((action, params) => {
     if (action === 'capture_cable_thru') {

@@ -36,7 +36,7 @@ class SFCWEngine:
         self.rx2_gain = 20
         self.rx_gain_min = 5
         self.rx_gain_max = 38
-        self.range_offset = 1.44
+        self.range_offset = 0.50
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -484,6 +484,14 @@ class SFCWEngine:
 
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
+
+        # Clip to positive distances only
+        positive_mask = distances >= 0
+        magnitude_db = magnitude_db[positive_mask]
+        distances = distances[positive_mask]
+        if ref_trace_db is not None:
+            ref_trace_db = [ref_trace_db[i] for i, m in enumerate(positive_mask) if m]
+            cur_trace_db = [cur_trace_db[i] for i, m in enumerate(positive_mask) if m]
 
         result = {
             'type': 'range_profile',

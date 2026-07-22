@@ -121,7 +121,14 @@ class SDRServer:
                     params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
+                needs_restart = self.sfcw.running and any(
+                    k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
+                                          'start_freq', 'stop_freq', 'step_size')
+                )
                 self.sfcw.set_params(**params)
+                if needs_restart:
+                    self.sfcw.stop()
+                    self.sfcw.start(self._sfcw_callback)
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_start':

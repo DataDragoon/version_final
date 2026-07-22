@@ -12,7 +12,7 @@ function jet(t) {
   ];
 }
 
-export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20 }) {
+export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20, distMin = 0, distMax = null }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -45,11 +45,25 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     const plotH = h - pad.top - pad.bottom;
 
     const numPos = scanData.length;
-    const numBins = scanData[0].magnitudes.length;
-    const distances = scanData[0].distances;
-    const maxDist = distances[distances.length - 1];
+    const allDistances = scanData[0].distances;
     const { stepSize } = params;
     const apertureLen = (numPos - 1) * stepSize;
+
+    // Distance range filtering
+    const dMin = distMin || 0;
+    const dMax = distMax || allDistances[allDistances.length - 1];
+    let startBin = 0;
+    let endBin = allDistances.length - 1;
+    for (let i = 0; i < allDistances.length; i++) {
+      if (allDistances[i] >= dMin) { startBin = i; break; }
+    }
+    for (let i = allDistances.length - 1; i >= 0; i--) {
+      if (allDistances[i] <= dMax) { endBin = i; break; }
+    }
+    const numBins = endBin - startBin + 1;
+    const distances = allDistances.slice(startBin, endBin + 1);
+    const maxDist = distances[distances.length - 1];
+    const minDist = distances[0];
 
     // Dynamic range
     const dbMin = dbFloor;
@@ -62,7 +76,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     for (let posIdx = 0; posIdx < numPos; posIdx++) {
       const mags = scanData[posIdx].magnitudes;
       for (let binIdx = 0; binIdx < numBins; binIdx++) {
-        const db = mags[binIdx];
+        const db = mags[startBin + binIdx];
         const t = (db - dbMin) / (dbMax - dbMin);
         const [r, g, b] = jet(t);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
@@ -101,11 +115,11 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     // Y-axis labels (range)
     for (let i = 0; i <= yTicks; i++) {
       const y = pad.top + (i / yTicks) * plotH;
-      const dist = (i / yTicks) * maxDist;
+      const dist = minDist + (i / yTicks) * (maxDist - minDist);
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`${dist.toFixed(1)} m`, pad.left - 6, y + 3);
+      ctx.fillText(`${dist.toFixed(2)} m`, pad.left - 6, y + 3);
     }
 
     // X-axis labels (position)
@@ -170,7 +184,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
         const binIdx = Math.min(numBins - 1, Math.floor(relY * numBins));
         const dist = distances[binIdx];
         const pos = posIdx * stepSize;
-        const db = scanData[posIdx].magnitudes[binIdx];
+        const db = scanData[posIdx].magnitudes[startBin + binIdx];
 
         ctx.setLineDash([3, 3]);
         ctx.strokeStyle = '#ffffff44';
@@ -193,7 +207,7 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
         ctx.fillText(label, labelX, crosshair.y - 8);
       }
     }
-  }, [scanData, params, crosshair, dbFloor, dbCeil]);
+  }, [scanData, params, crosshair, dbFloor, dbCeil, distMin, distMax]);
 
   useEffect(() => {
     const render = () => {

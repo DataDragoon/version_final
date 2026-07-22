@@ -181,8 +181,10 @@ export default function Viewport({
               params={bscanParams}
               capturing={bscanCapturing}
               sfcwProgress={sfcwProgress}
-              dbFloor={sfcwParams.dbFloor}
-              dbCeil={sfcwParams.dbCeil}
+              dbFloor={bscanParams.dbFloor}
+              dbCeil={bscanParams.dbCeil}
+              distMin={bscanParams.distMin}
+              distMax={bscanParams.distMax}
             />
             {bscanData.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

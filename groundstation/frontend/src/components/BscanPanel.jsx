@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
 export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams }) {
-  const { stepSize, numPositions } = params;
+  const { stepSize, numPositions, dbFloor, dbCeil, distMin, distMax } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -140,6 +140,46 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
           >
             Undo Last
           </button>
+        </div>
+      </Section>
+
+      {/* Display Controls */}
+      <Section label="Display">
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="dB Floor"
+            value={dbFloor}
+            unit="dB"
+            onChange={(v) => update('dbFloor', v)}
+            min={-120}
+            max={40}
+          />
+          <EditableField
+            label="dB Ceil"
+            value={dbCeil}
+            unit="dB"
+            onChange={(v) => update('dbCeil', v)}
+            min={-120}
+            max={40}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="Dist Min"
+            value={distMin}
+            unit="m"
+            onChange={(v) => update('distMin', v)}
+            min={0}
+            max={20}
+          />
+          <EditableField
+            label="Dist Max"
+            value={distMax || (scanData.length > 0 ? scanData[0].distances[scanData[0].distances.length - 1] : 3)}
+            unit="m"
+            onChange={(v) => update('distMax', v)}
+            min={0.01}
+            max={20}
+          />
         </div>
       </Section>
     </>

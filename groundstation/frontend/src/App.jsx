@@ -56,6 +56,10 @@ export default function App() {
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
+    dbFloor: -90,
+    dbCeil: -20,
+    distMin: 0,
+    distMax: null,  // null = auto (full range)
   });
 
   // HW Calibration state

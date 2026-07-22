@@ -36,7 +36,7 @@ class SFCWEngine:
         self.rx2_gain = 20
         self.rx_gain_min = 5
         self.rx_gain_max = 38
-        self.range_offset = 0.50
+        self.range_offset = 0.55
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None

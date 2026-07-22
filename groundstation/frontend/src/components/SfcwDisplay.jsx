@@ -94,7 +94,40 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
       ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
     }
 
-    // Trace
+    // Reference overlay traces (current & aligned reference — dotted)
+    if (result.ref_trace && result.cur_trace) {
+      const refT = result.ref_trace;
+      const curT = result.cur_trace;
+      const traceN = Math.min(refT.length, n);
+
+      // Current scan (before subtraction) — dotted white
+      ctx.beginPath();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#ffffff55';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < traceN; i++) {
+        const x = pad.left + (i / (n - 1)) * plotW;
+        const y = pad.top + ((magMax - curT[i]) / (magMax - magMin)) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Aligned reference — dotted cyan
+      ctx.beginPath();
+      ctx.strokeStyle = '#22d3ee55';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < traceN; i++) {
+        const x = pad.left + (i / (n - 1)) * plotW;
+        const y = pad.top + ((magMax - refT[i]) / (magMax - magMin)) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Trace (subtracted result — solid)
     ctx.beginPath();
     ctx.strokeStyle = TRACE_COLOR;
     ctx.lineWidth = 1.5;

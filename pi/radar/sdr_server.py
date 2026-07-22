@@ -322,6 +322,9 @@ class SDRServer:
                 }
                 if 'phase_coherence' in data:
                     result_msg['phase_coherence'] = data['phase_coherence']
+                if 'ref_trace' in data:
+                    result_msg['ref_trace'] = [round(m, 2) for m in data['ref_trace']]
+                    result_msg['cur_trace'] = [round(m, 2) for m in data['cur_trace']]
                 msg = json.dumps(result_msg)
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
                 msg = json.dumps(data)

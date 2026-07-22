@@ -86,67 +86,54 @@ class SFCWEngine:
         return mag_interp * np.exp(1j * phase_interp)
 
     def _aligned_subtraction(self, h_current, h_reference, freqs, step_size):
-        """Subtract reference after aligning to the dominant peak (wall).
+        """Subtract reference after aligning to the dominant reflector (wall).
 
-        Finds the wall peak in both current and reference range profiles,
-        computes the sub-bin range offset, applies a frequency-domain phase
-        ramp to shift the reference to match, then subtracts.
+        Estimates the range shift between current and reference by fitting
+        a linear phase slope to the ratio h_current/h_reference in the
+        frequency domain. This directly measures the time delay difference
+        with sub-sample precision, then applies the inverse phase ramp to
+        the reference before subtracting.
         """
         n = len(h_current)
-        window = np.hanning(n)
 
-        # Find wall peak position in reference
-        ref_profile = np.fft.ifft(h_reference * window)
-        half = n // 2
-        ref_mag = np.abs(ref_profile[:half])
-        ref_peak_bin = np.argmax(ref_mag)
-        ref_peak_range = self._sub_bin_peak(ref_mag, ref_peak_bin, step_size)
+        # Compute the ratio — if only the wall shifted, this ratio's phase
+        # is a linear ramp whose slope encodes the range shift
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > np.max(ref_mag) * 0.01
+        ratio = np.ones(n, dtype=np.complex128)
+        ratio[valid] = h_current[valid] / h_reference[valid]
 
-        # Find wall peak position in current scan
-        cur_profile = np.fft.ifft(h_current * window)
-        cur_mag = np.abs(cur_profile[:half])
-        cur_peak_bin = np.argmax(cur_mag)
-        cur_peak_range = self._sub_bin_peak(cur_mag, cur_peak_bin, step_size)
+        # Extract phase of ratio and unwrap
+        phase_ratio = np.unwrap(np.angle(ratio))
 
-        # Range offset between current and reference wall positions
-        delta_range = cur_peak_range - ref_peak_range
+        # Fit linear slope to phase vs frequency-step-index
+        # Weight by reference magnitude (trust high-SNR bins more)
+        weights = ref_mag / (np.max(ref_mag) + 1e-12)
+        indices = np.arange(n, dtype=np.float64)
 
-        # Shift reference by delta_range using frequency-domain phase ramp
-        # A shift of delta_range in range = phase ramp of 2*pi*delta_range*f/c
-        # But our freqs are actual RF frequencies; the range profile is from
-        # baseband steps. The phase ramp per step is 2*pi*delta_range/(c/(2*step_size))
-        # Simplification: shift in bins = delta_range / bin_width
-        max_range = SPEED_OF_LIGHT / (2 * step_size)
-        bin_width = max_range / n
-        shift_bins = delta_range / bin_width
+        # Weighted linear regression: phase = slope * index + intercept
+        w = weights
+        sum_w = np.sum(w)
+        if sum_w < 1e-12:
+            return h_current - h_reference
 
-        # Apply phase ramp to shift reference
-        k = np.arange(n)
-        phase_ramp = np.exp(-1j * 2 * np.pi * shift_bins * k / n)
-        h_ref_shifted = h_reference * phase_ramp
+        mean_x = np.sum(w * indices) / sum_w
+        mean_y = np.sum(w * phase_ratio) / sum_w
+        cov_xy = np.sum(w * (indices - mean_x) * (phase_ratio - mean_y))
+        var_x = np.sum(w * (indices - mean_x)**2)
 
-        return h_current - h_ref_shifted
+        if var_x < 1e-12:
+            return h_current - h_reference
 
-    def _sub_bin_peak(self, magnitude, peak_bin, step_size):
-        """Parabolic interpolation for sub-bin peak position. Returns range in meters."""
-        n = len(magnitude)
-        max_range = SPEED_OF_LIGHT / (2 * step_size)
-        bin_width = max_range / n
+        slope = cov_xy / var_x  # radians per frequency step
+        intercept = mean_y - slope * mean_x
 
-        if peak_bin == 0 or peak_bin >= n - 1:
-            return peak_bin * bin_width
+        # Apply the inverse phase correction to the reference
+        # This shifts the reference to match the current scan's wall position
+        correction = np.exp(1j * (slope * indices + intercept))
+        h_ref_aligned = h_reference * correction
 
-        # Parabolic interpolation on dB values for better accuracy
-        y0 = 20 * np.log10(magnitude[peak_bin - 1] + 1e-12)
-        y1 = 20 * np.log10(magnitude[peak_bin] + 1e-12)
-        y2 = 20 * np.log10(magnitude[peak_bin + 1] + 1e-12)
-
-        denom = 2 * (2 * y1 - y0 - y2)
-        if abs(denom) < 1e-10:
-            return peak_bin * bin_width
-
-        offset = (y0 - y2) / denom  # fractional bin offset, -0.5 to +0.5
-        return (peak_bin + offset) * bin_width
+        return h_current - h_ref_aligned, h_ref_aligned
 
     @property
     def num_steps(self):
@@ -459,10 +446,20 @@ class SFCWEngine:
             self._sub_mode = 'background'
 
         # Apply whichever subtraction mode is active
+        ref_trace_db = None
+        cur_trace_db = None
         if self._sub_mode == 'background' and self._background is not None and len(self._background) == num_steps:
             h_cal = h_cal - self._background
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
-            h_cal = self._aligned_subtraction(h_cal, self._reference, freqs, step)
+            h_original = h_cal.copy()
+            h_cal, h_ref_aligned = self._aligned_subtraction(h_cal, self._reference, freqs, step)
+            # Compute range profiles for current (original) and aligned reference
+            window_tmp = np.hanning(num_steps)
+            half_tmp = num_steps // 2
+            cur_profile = np.fft.ifft(h_original * window_tmp)
+            ref_profile = np.fft.ifft(h_ref_aligned * window_tmp)
+            cur_trace_db = (20 * np.log10(np.abs(cur_profile[:half_tmp]) + 1e-12)).tolist()
+            ref_trace_db = (20 * np.log10(np.abs(ref_profile[:half_tmp]) + 1e-12)).tolist()
 
         # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)
@@ -483,7 +480,7 @@ class SFCWEngine:
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
 
-        return {
+        result = {
             'type': 'range_profile',
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
@@ -498,6 +495,12 @@ class SFCWEngine:
                 'slope_rad_per_step': float(coeffs[0]),
             },
         }
+
+        if ref_trace_db is not None:
+            result['ref_trace'] = ref_trace_db
+            result['cur_trace'] = cur_trace_db
+
+        return result
 
     # ------------------------------------------------------------------
     # Hardware calibration

@@ -142,6 +142,18 @@ class SDRServer:
 
             elif action == 'sfcw_clear_bg':
                 self.sfcw.clear_background()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_capture_ref':
+                self.sfcw.capture_reference()
+
+            elif action == 'sfcw_clear_ref':
+                self.sfcw.clear_reference()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_clear_all':
+                self.sfcw.clear_all_subtraction()
+                await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_mean_enable':
                 self.sfcw.enable_mean_subtraction()

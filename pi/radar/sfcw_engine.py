@@ -45,6 +45,9 @@ class SFCWEngine:
         self._single_shot = False
         self._background = None
         self._capture_background = False
+        self._reference = None
+        self._capture_reference = False
+        self._sub_mode = None  # 'background' | 'reference' | None
         self._cal_mode = None
         # Hardware calibration data (loaded from disk)
         self._cal_cable_thru = None
@@ -76,12 +79,74 @@ class SFCWEngine:
         """Interpolate stored calibration H(f) onto the current sweep's frequency grid."""
         cal_freqs = cal_data['frequencies']
         cal_h = cal_data['h_complex']
-        # Interpolate magnitude and phase separately to avoid wrapping issues
         cal_mag = np.abs(cal_h)
         cal_phase = np.unwrap(np.angle(cal_h))
         mag_interp = np.interp(target_freqs, cal_freqs, cal_mag)
         phase_interp = np.interp(target_freqs, cal_freqs, cal_phase)
         return mag_interp * np.exp(1j * phase_interp)
+
+    def _aligned_subtraction(self, h_current, h_reference, freqs, step_size):
+        """Subtract reference after aligning to the dominant peak (wall).
+
+        Finds the wall peak in both current and reference range profiles,
+        computes the sub-bin range offset, applies a frequency-domain phase
+        ramp to shift the reference to match, then subtracts.
+        """
+        n = len(h_current)
+        window = np.hanning(n)
+
+        # Find wall peak position in reference
+        ref_profile = np.fft.ifft(h_reference * window)
+        half = n // 2
+        ref_mag = np.abs(ref_profile[:half])
+        ref_peak_bin = np.argmax(ref_mag)
+        ref_peak_range = self._sub_bin_peak(ref_mag, ref_peak_bin, step_size)
+
+        # Find wall peak position in current scan
+        cur_profile = np.fft.ifft(h_current * window)
+        cur_mag = np.abs(cur_profile[:half])
+        cur_peak_bin = np.argmax(cur_mag)
+        cur_peak_range = self._sub_bin_peak(cur_mag, cur_peak_bin, step_size)
+
+        # Range offset between current and reference wall positions
+        delta_range = cur_peak_range - ref_peak_range
+
+        # Shift reference by delta_range using frequency-domain phase ramp
+        # A shift of delta_range in range = phase ramp of 2*pi*delta_range*f/c
+        # But our freqs are actual RF frequencies; the range profile is from
+        # baseband steps. The phase ramp per step is 2*pi*delta_range/(c/(2*step_size))
+        # Simplification: shift in bins = delta_range / bin_width
+        max_range = SPEED_OF_LIGHT / (2 * step_size)
+        bin_width = max_range / n
+        shift_bins = delta_range / bin_width
+
+        # Apply phase ramp to shift reference
+        k = np.arange(n)
+        phase_ramp = np.exp(-1j * 2 * np.pi * shift_bins * k / n)
+        h_ref_shifted = h_reference * phase_ramp
+
+        return h_current - h_ref_shifted
+
+    def _sub_bin_peak(self, magnitude, peak_bin, step_size):
+        """Parabolic interpolation for sub-bin peak position. Returns range in meters."""
+        n = len(magnitude)
+        max_range = SPEED_OF_LIGHT / (2 * step_size)
+        bin_width = max_range / n
+
+        if peak_bin == 0 or peak_bin >= n - 1:
+            return peak_bin * bin_width
+
+        # Parabolic interpolation on dB values for better accuracy
+        y0 = 20 * np.log10(magnitude[peak_bin - 1] + 1e-12)
+        y1 = 20 * np.log10(magnitude[peak_bin] + 1e-12)
+        y2 = 20 * np.log10(magnitude[peak_bin + 1] + 1e-12)
+
+        denom = 2 * (2 * y1 - y0 - y2)
+        if abs(denom) < 1e-10:
+            return peak_bin * bin_width
+
+        offset = (y0 - y2) / denom  # fractional bin offset, -0.5 to +0.5
+        return (peak_bin + offset) * bin_width
 
     @property
     def num_steps(self):
@@ -149,6 +214,8 @@ class SFCWEngine:
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
             'background_active': self._background is not None,
+            'reference_active': self._reference is not None,
+            'sub_mode': self._sub_mode,
             'mean_subtraction': self._mean_subtraction_enabled,
             'mean_count': self._mean_count,
         }
@@ -159,6 +226,22 @@ class SFCWEngine:
     def clear_background(self):
         self._background = None
         self._capture_background = False
+        self._sub_mode = None
+
+    def capture_reference(self):
+        self._capture_reference = True
+
+    def clear_reference(self):
+        self._reference = None
+        self._capture_reference = False
+        self._sub_mode = None
+
+    def clear_all_subtraction(self):
+        self._background = None
+        self._capture_background = False
+        self._reference = None
+        self._capture_reference = False
+        self._sub_mode = None
 
     def enable_mean_subtraction(self):
         self._mean_subtraction_enabled = True
@@ -335,39 +418,51 @@ class SFCWEngine:
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        # Hardware calibration corrections
-        if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
-            ct = self._interpolate_cal(self._cal_cable_thru, freqs)
-            ct_mag = np.abs(ct)
-            noise_floor = np.max(ct_mag) * 0.05
-            regularizer = ct_mag**2 / (ct_mag**2 + noise_floor**2)
-            ct_safe = np.where(ct_mag > 1e-10, ct, 1.0)
-            h_cal = h_cal / ct_safe * regularizer
+        # Hardware calibration corrections (disabled — causes ringing/artifacts)
+        # if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
+        #     ct = self._interpolate_cal(self._cal_cable_thru, freqs)
+        #     ct_mag = np.abs(ct)
+        #     noise_floor = np.max(ct_mag) * 0.05
+        #     regularizer = ct_mag**2 / (ct_mag**2 + noise_floor**2)
+        #     ct_safe = np.where(ct_mag > 1e-10, ct, 1.0)
+        #     h_cal = h_cal / ct_safe * regularizer
+        #
+        # if self._cal_free_space is not None:
+        #     fs = self._interpolate_cal(self._cal_free_space, freqs)
+        #     if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
+        #         fs = fs / ct_safe * regularizer
+        #     h_cal = h_cal - fs
 
-        if self._cal_free_space is not None:
-            fs = self._interpolate_cal(self._cal_free_space, freqs)
-            if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
-                fs = fs / ct_safe * regularizer
-            h_cal = h_cal - fs
+        # Running mean subtraction (disabled — not suitable for B-scan movement)
+        # if self._mean_subtraction_enabled:
+        #     if self._mean_accumulator is None or len(self._mean_accumulator) != num_steps:
+        #         self._mean_accumulator = h_cal.copy()
+        #         self._mean_count = 1
+        #     else:
+        #         self._mean_count += 1
+        #         alpha = 1.0 / self._mean_count
+        #         self._mean_accumulator = (1 - alpha) * self._mean_accumulator + alpha * h_cal
+        #     h_cal = h_cal - self._mean_accumulator
 
-        # Running mean subtraction: converges on static environment, reveals transients
-        if self._mean_subtraction_enabled:
-            if self._mean_accumulator is None or len(self._mean_accumulator) != num_steps:
-                self._mean_accumulator = h_cal.copy()
-                self._mean_count = 1
-            else:
-                self._mean_count += 1
-                alpha = 1.0 / self._mean_count
-                self._mean_accumulator = (1 - alpha) * self._mean_accumulator + alpha * h_cal
-            h_cal = h_cal - self._mean_accumulator
+        # Capture reference (wall-aligned subtraction)
+        if self._capture_reference:
+            self._reference = h_cal.copy()
+            self._capture_reference = False
+            self._background = None
+            self._sub_mode = 'reference'
 
-        # Background subtraction: removes remaining static clutter
+        # Capture background (static subtraction)
         if self._capture_background:
             self._background = h_cal.copy()
             self._capture_background = False
+            self._reference = None
+            self._sub_mode = 'background'
 
-        if self._background is not None and len(self._background) == num_steps:
+        # Apply whichever subtraction mode is active
+        if self._sub_mode == 'background' and self._background is not None and len(self._background) == num_steps:
             h_cal = h_cal - self._background
+        elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
+            h_cal = self._aligned_subtraction(h_cal, self._reference, freqs, step)
 
         # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)

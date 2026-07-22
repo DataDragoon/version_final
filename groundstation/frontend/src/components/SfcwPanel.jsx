@@ -165,62 +165,55 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           idleSubLabel={!sdrConnected ? 'SDR not connected' : `${numSteps} steps ready`}
           color="orange"
         />
-        <div className="grid grid-cols-2 gap-2 mt-2">
+        <div className="flex items-center justify-between px-1 mt-2 mb-1">
+          <span className="text-[10px] text-[#888] uppercase tracking-wider">
+            {sfcwStatus?.sub_mode === 'background' ? '● Background active' :
+             sfcwStatus?.sub_mode === 'reference' ? '● Reference active (aligned)' :
+             'No subtraction'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => sendSdr({ cmd: 'sfcw_capture_bg' })}
             disabled={!sfcwRunning}
             className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              sfcwRunning
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !sfcwRunning
+                ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+                : sfcwStatus?.sub_mode === 'background'
+                  ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
             )}
           >
             Capture BG
           </button>
           <button
-            onClick={() => sendSdr({ cmd: 'sfcw_clear_bg' })}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
-          >
-            Clear BG
-          </button>
-        </div>
-      </Section>
-
-      {/* Mean Subtraction */}
-      <Section label="Mean Subtraction">
-        <div className="flex items-center justify-between px-1 mb-2">
-          <span className="text-[10px] text-[#888] uppercase tracking-wider">
-            {sfcwStatus?.mean_subtraction
-              ? `Active — ${sfcwStatus.mean_count || 0} sweeps`
-              : 'Disabled'}
-          </span>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => sendSdr({ cmd: sfcwStatus?.mean_subtraction ? 'sfcw_mean_disable' : 'sfcw_mean_enable' })}
+            onClick={() => sendSdr({ cmd: 'sfcw_capture_ref' })}
+            disabled={!sfcwRunning}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              sfcwStatus?.mean_subtraction
-                ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C] hover:bg-[#D1855C]/20'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+              !sfcwRunning
+                ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+                : sfcwStatus?.sub_mode === 'reference'
+                  ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
             )}
           >
-            {sfcwStatus?.mean_subtraction ? 'Disable' : 'Enable'}
-          </button>
-          <button
-            onClick={() => sendSdr({ cmd: 'sfcw_mean_reset' })}
-            disabled={!sfcwStatus?.mean_subtraction}
-            className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              sfcwStatus?.mean_subtraction
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
-            )}
-          >
-            Reset Mean
+            Capture Ref
           </button>
         </div>
+        <button
+          onClick={() => sendSdr({ cmd: 'sfcw_clear_all' })}
+          disabled={!sfcwStatus?.sub_mode}
+          className={cn(
+            'w-full mt-1 px-3 py-2 rounded-lg text-xs font-medium transition-all',
+            sfcwStatus?.sub_mode
+              ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+              : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+          )}
+        >
+          Clear
+        </button>
       </Section>
     </>
   );

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, Wrench, Zap } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, Zap, Grid3x3 } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -8,6 +8,7 @@ import FftDisplay from './FftDisplay';
 import SfcwDisplay from './SfcwDisplay';
 import BscanDisplay from './BscanDisplay';
 import HwCalDisplay from './HwCalDisplay';
+import SarDisplay from './SarDisplay';
 
 export default function Viewport({
   activePanel,
@@ -30,6 +31,8 @@ export default function Viewport({
   sfcwParams,
   hwCalResult,
   hwCalMode,
+  sarResult,
+  sarParams,
 }) {
   if (!activePanel) {
     return (
@@ -212,6 +215,29 @@ export default function Viewport({
             {!hwCalResult && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No calibration data</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activePanel === 'sar') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Grid3x3} label="SAR Reconstruction" active={!!sarResult} color="green" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {sarResult && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#4ade80]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <SarDisplay sarResult={sarResult} sarParams={sarParams} />
+            {!sarResult && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No SAR image</span>
               </div>
             )}
           </div>

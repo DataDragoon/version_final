@@ -332,6 +332,10 @@ class SDRServer:
                 if 'ref_trace' in data:
                     result_msg['ref_trace'] = [round(m, 2) for m in data['ref_trace']]
                     result_msg['cur_trace'] = [round(m, 2) for m in data['cur_trace']]
+                if 'h_cal_real' in data:
+                    result_msg['h_cal_real'] = [round(v, 8) for v in data['h_cal_real']]
+                    result_msg['h_cal_imag'] = [round(v, 8) for v in data['h_cal_imag']]
+                    result_msg['freqs'] = data['freqs']
                 msg = json.dumps(result_msg)
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
                 msg = json.dumps(data)

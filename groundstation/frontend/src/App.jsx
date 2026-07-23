@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
+import { runBackprojection } from './lib/sar';
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -62,6 +63,20 @@ export default function App() {
     distMax: null,  // null = auto (full range)
   });
 
+  // SAR state
+  const [sarParams, setSarParams] = useState({
+    pixelsX: 100,
+    pixelsZ: 100,
+    depthMin: 0.1,
+    depthMax: 3.0,
+    lateralMin: undefined,
+    lateralMax: undefined,
+    meanSubtract: true,
+    dbFloor: -60,
+    dbCeil: -10,
+  });
+  const [sarResult, setSarResult] = useState(null);
+
   // HW Calibration state
   const [hwCalStatus, setHwCalStatus] = useState({
     cableThru: null,
@@ -116,7 +131,13 @@ export default function App() {
       }
     } else if (msg.type === 'sfcw_result') {
       if (bscanPendingRef.current === 'capture') {
-        setBscanData(prev => [...prev, { magnitudes: [...msg.magnitudes], distances: [...msg.distances] }]);
+        const posData = { magnitudes: [...msg.magnitudes], distances: [...msg.distances] };
+        if (msg.h_cal_real && msg.h_cal_imag) {
+          posData.h_cal_real = [...msg.h_cal_real];
+          posData.h_cal_imag = [...msg.h_cal_imag];
+          posData.freqs = [...msg.freqs];
+        }
+        setBscanData(prev => [...prev, posData]);
         bscanPendingRef.current = null;
         setBscanCapturing(false);
       } else if (bscanPendingRef.current === 'capture_bg') {
@@ -277,6 +298,14 @@ export default function App() {
     }
   }, [sendSdr]);
 
+  const handleSarAction = useCallback((action) => {
+    if (action === 'reconstruct') {
+      if (bscanData.length < 2) return;
+      const result = runBackprojection(bscanData, bscanParams, sarParams);
+      setSarResult(result);
+    }
+  }, [bscanData, bscanParams, sarParams]);
+
   // Rate counter interval
   const rateIntervalRef = useRef(null);
 
@@ -358,6 +387,11 @@ export default function App() {
         onBscanAction={handleBscanAction}
         hwCalStatus={hwCalStatus}
         onHwCalAction={handleHwCalAction}
+        bscanDataForSar={bscanData}
+        sarParams={sarParams}
+        onSarParamsChange={setSarParams}
+        onSarAction={handleSarAction}
+        sarResult={sarResult}
       />
       <Viewport
         activePanel={activePanel}
@@ -380,6 +414,8 @@ export default function App() {
         sfcwParams={sfcwParams}
         hwCalResult={hwCalResult}
         hwCalMode={hwCalMode}
+        sarResult={sarResult}
+        sarParams={sarParams}
       />
     </div>
   );

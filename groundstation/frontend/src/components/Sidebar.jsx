@@ -1,4 +1,4 @@
-import { Activity, Eye, Radio, Radar, ScanLine, Wrench, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, ChevronLeft, Wifi, WifiOff, Grid3x3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
@@ -6,6 +6,7 @@ import RfCalibPanel from './RfCalibPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
 import HwCalPanel from './HwCalPanel';
+import SarPanel from './SarPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity,  accent: '#D1855C', accentTo: '#E5A986' },
@@ -14,6 +15,7 @@ const PANELS = [
   { id: 'sfcw',      label: 'SFCW',      icon: Radar,     accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine,  accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'hwcal',     label: 'HW Cal',    icon: Wrench,    accent: '#A78BFA', accentTo: '#C4B5FD' },
+  { id: 'sar',       label: 'SAR',       icon: Grid3x3,   accent: '#4ade80', accentTo: '#86efac' },
 ];
 
 export default function Sidebar({
@@ -53,6 +55,11 @@ export default function Sidebar({
   onBscanAction,
   hwCalStatus,
   onHwCalAction,
+  bscanDataForSar,
+  sarParams,
+  onSarParamsChange,
+  onSarAction,
+  sarResult,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -219,6 +226,16 @@ export default function Sidebar({
                   sendSdr={sendSdr}
                   calStatus={hwCalStatus}
                   onCalAction={onHwCalAction}
+                />
+              )}
+              {activePanel === 'sar' && (
+                <SarPanel
+                  bscanData={bscanDataForSar}
+                  bscanParams={bscanParams}
+                  sarParams={sarParams}
+                  onSarParamsChange={onSarParamsChange}
+                  onSarAction={onSarAction}
+                  sarResult={sarResult}
                 />
               )}
             </div>

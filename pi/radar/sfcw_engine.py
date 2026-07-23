@@ -507,6 +507,9 @@ class SFCWEngine:
                 'coherent': phase_std < 0.3,
                 'slope_rad_per_step': float(coeffs[0]),
             },
+            'h_cal_real': h_cal.real.tolist(),
+            'h_cal_imag': h_cal.imag.tolist(),
+            'freqs': freqs.tolist(),
         }
 
         if ref_trace_db is not None:

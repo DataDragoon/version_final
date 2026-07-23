@@ -67,20 +67,21 @@ export default function App() {
   // SVD filter state
   const [svdEnabled, setSvdEnabled] = useState(false);
   const [svdK, setSvdK] = useState(1);
+  const [svdStrength, setSvdStrength] = useState(0.5);
 
   const filteredBscanData = useMemo(() => {
     if (!svdEnabled || bscanData.length < 2) return bscanData;
-    return svdFilter(bscanData, svdK);
-  }, [bscanData, svdEnabled, svdK]);
+    return svdFilter(bscanData, svdK, svdStrength);
+  }, [bscanData, svdEnabled, svdK, svdStrength]);
 
   const filteredBscanDataForSar = useMemo(() => {
     if (!svdEnabled || bscanData.length < 2) return bscanData;
     const hasComplex = bscanData[0]?.h_cal_real && bscanData[0]?.h_cal_imag;
     if (hasComplex) {
-      return svdFilterComplex(bscanData, svdK);
+      return svdFilterComplex(bscanData, svdK, svdStrength);
     }
-    return svdFilter(bscanData, svdK);
-  }, [bscanData, svdEnabled, svdK]);
+    return svdFilter(bscanData, svdK, svdStrength);
+  }, [bscanData, svdEnabled, svdK, svdStrength]);
 
   // SAR state
   const [sarParams, setSarParams] = useState({
@@ -406,8 +407,10 @@ export default function App() {
         onBscanAction={handleBscanAction}
         svdEnabled={svdEnabled}
         svdK={svdK}
+        svdStrength={svdStrength}
         onSvdEnabledChange={setSvdEnabled}
         onSvdKChange={setSvdK}
+        onSvdStrengthChange={setSvdStrength}
         hwCalStatus={hwCalStatus}
         onHwCalAction={handleHwCalAction}
         bscanDataForSar={filteredBscanDataForSar}

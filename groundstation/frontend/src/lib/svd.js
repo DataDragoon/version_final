@@ -64,7 +64,7 @@ function powerIteration(matrix, rows, cols, maxIter = 100, tol = 1e-10) {
   return { u, sigma, v };
 }
 
-export function svdFilter(bscanData, k) {
+export function svdFilter(bscanData, k, strength = 1.0) {
   if (!bscanData || bscanData.length < 2 || k < 1) return bscanData;
 
   const numPositions = bscanData.length;
@@ -78,15 +78,15 @@ export function svdFilter(bscanData, k) {
     }
   }
 
-  // Remove first k singular components via deflation
+  // Partially remove first k singular components via deflation
+  const s = Math.max(0, Math.min(1, strength));
   for (let i = 0; i < k; i++) {
     const { u, sigma, v } = powerIteration(flat, numPositions, numBins);
     if (sigma < 1e-10) break;
 
-    // Deflate: A = A - sigma * u * v^T
     for (let p = 0; p < numPositions; p++) {
       for (let b = 0; b < numBins; b++) {
-        flat[p * numBins + b] -= sigma * u[p] * v[b];
+        flat[p * numBins + b] -= s * sigma * u[p] * v[b];
       }
     }
   }
@@ -103,12 +103,13 @@ export function svdFilter(bscanData, k) {
   return filtered;
 }
 
-export function svdFilterComplex(bscanData, k) {
+export function svdFilterComplex(bscanData, k, strength = 1.0) {
   if (!bscanData || bscanData.length < 2 || k < 1) return bscanData;
   if (!bscanData[0].h_cal_real || !bscanData[0].h_cal_imag) return bscanData;
 
   const numPositions = bscanData.length;
   const numFreqs = bscanData[0].h_cal_real.length;
+  const s = Math.max(0, Math.min(1, strength));
 
   // Build real and imag matrices separately
   const flatRe = new Float64Array(numPositions * numFreqs);
@@ -120,32 +121,22 @@ export function svdFilterComplex(bscanData, k) {
     }
   }
 
-  // SVD on the combined magnitude for component identification
-  // Build magnitude matrix to find dominant directions
-  const flatMag = new Float64Array(numPositions * numFreqs);
-  for (let i = 0; i < flatMag.length; i++) {
-    flatMag[i] = Math.sqrt(flatRe[i] * flatRe[i] + flatIm[i] * flatIm[i]);
-  }
-
   // Remove k components from both real and imaginary parts
-  // Using SVD on real part, then applying same projection to imaginary
   for (let i = 0; i < k; i++) {
-    // Find dominant singular vector of real part
     const { u: uRe, sigma: sigRe, v: vRe } = powerIteration(flatRe, numPositions, numFreqs);
     if (sigRe > 1e-10) {
       for (let p = 0; p < numPositions; p++) {
         for (let f = 0; f < numFreqs; f++) {
-          flatRe[p * numFreqs + f] -= sigRe * uRe[p] * vRe[f];
+          flatRe[p * numFreqs + f] -= s * sigRe * uRe[p] * vRe[f];
         }
       }
     }
 
-    // Find dominant singular vector of imaginary part
     const { u: uIm, sigma: sigIm, v: vIm } = powerIteration(flatIm, numPositions, numFreqs);
     if (sigIm > 1e-10) {
       for (let p = 0; p < numPositions; p++) {
         for (let f = 0; f < numFreqs; f++) {
-          flatIm[p * numFreqs + f] -= sigIm * uIm[p] * vIm[f];
+          flatIm[p * numFreqs + f] -= s * sigIm * uIm[p] * vIm[f];
         }
       }
     }

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, onSvdEnabledChange, onSvdKChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
   const { stepSize, numPositions, dbFloor, dbCeil, distMin, distMax } = params;
 
   const update = (key, value) => {
@@ -183,14 +183,24 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         >
           {svdEnabled ? '● SVD ON' : 'SVD OFF'}
         </button>
-        <EditableField
-          label="k (remove)"
-          value={svdK}
-          unit=""
-          onChange={(v) => onSvdKChange(Math.round(v))}
-          min={1}
-          max={Math.max(1, scanData.length - 1)}
-        />
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="k (remove)"
+            value={svdK}
+            unit=""
+            onChange={(v) => onSvdKChange(Math.round(v))}
+            min={1}
+            max={Math.max(1, scanData.length - 1)}
+          />
+          <EditableField
+            label="Strength"
+            value={svdStrength}
+            unit=""
+            onChange={(v) => onSvdStrengthChange(v)}
+            min={0.01}
+            max={1}
+          />
+        </div>
       </Section>
 
       {/* Display Controls */}

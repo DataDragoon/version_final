@@ -2,17 +2,116 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function SarPanel({ bscanData, bscanParams, sarParams, onSarParamsChange, onSarAction, sarResult }) {
-  const { pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax, dbFloor, dbCeil, meanSubtract } = sarParams;
+export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress }) {
+  const {
+    pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax,
+    dbFloor, dbCeil, meanSubtract, svdEnabled, svdK, window: windowType,
+  } = sarParams;
 
   const update = (key, value) => {
     onSarParamsChange({ ...sarParams, [key]: value });
   };
 
-  const hasBscan = bscanData && bscanData.length >= 2;
+  const numPositions = bscanData ? bscanData.length : 0;
 
   return (
     <>
+      {/* Status */}
+      <Section label="Status">
+        <div className="grid grid-cols-2 gap-2">
+          <InfoTile label="Positions" value={numPositions < 2 ? `${numPositions} (need ≥2)` : numPositions} />
+          {sarResult && <InfoTile label="Time" value={`${sarResult.computeTimeMs} ms`} />}
+        </div>
+        {sarResult && (
+          <div className="grid grid-cols-2 gap-2">
+            <InfoTile label="Grid" value={`${sarResult.pixelsX}×${sarResult.pixelsZ}`} />
+            <InfoTile label="Mode" value={sarResult.coherent ? 'coherent' : 'incoherent'} />
+          </div>
+        )}
+        {sarProgress !== null && (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-emerald-400 font-medium">Reconstructing...</span>
+              <span className="text-[10px] font-mono text-white/60">{Math.round(sarProgress * 100)}%</span>
+            </div>
+            <div className="h-1 w-full rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 rounded-full transition-[width] duration-100"
+                style={{ width: `${sarProgress * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </Section>
+
+      {/* Clutter Removal */}
+      <Section label="Clutter Removal">
+        <button
+          onClick={() => update('svdEnabled', !svdEnabled)}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            svdEnabled
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {svdEnabled ? `● SVD Filter ON (k=${svdK})` : 'SVD Filter OFF'}
+        </button>
+        {svdEnabled && (
+          <div className="grid grid-cols-1 gap-2">
+            <EditableField
+              label="SVD k"
+              value={svdK}
+              unit="components"
+              onChange={(v) => update('svdK', Math.round(v))}
+              min={1}
+              max={10}
+            />
+          </div>
+        )}
+        {!svdEnabled && (
+          <button
+            onClick={() => update('meanSubtract', !meanSubtract)}
+            className={cn(
+              'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              meanSubtract
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            {meanSubtract ? '● Mean Subtraction ON' : 'Mean Subtraction OFF'}
+          </button>
+        )}
+      </Section>
+
+      {/* Window */}
+      <Section label="Window">
+        <div className="flex gap-2">
+          <button
+            onClick={() => update('window', 'blackman-harris')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              windowType === 'blackman-harris'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Blackman-Harris
+          </button>
+          <button
+            onClick={() => update('window', 'hanning')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              windowType === 'hanning'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Hanning
+          </button>
+        </div>
+      </Section>
+
       {/* Image Grid */}
       <Section label="Image Grid">
         <div className="grid grid-cols-2 gap-2">
@@ -75,21 +174,6 @@ export default function SarPanel({ bscanData, bscanParams, sarParams, onSarParam
         </div>
       </Section>
 
-      {/* Processing */}
-      <Section label="Processing">
-        <button
-          onClick={() => update('meanSubtract', !meanSubtract)}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            meanSubtract
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {meanSubtract ? '● Mean Subtraction ON' : 'Mean Subtraction OFF'}
-        </button>
-      </Section>
-
       {/* Display */}
       <Section label="Display">
         <div className="grid grid-cols-2 gap-2">
@@ -110,45 +194,6 @@ export default function SarPanel({ bscanData, bscanParams, sarParams, onSarParam
             max={40}
           />
         </div>
-      </Section>
-
-      {/* Reconstruct */}
-      <Section label="Reconstruct">
-        <button
-          onClick={() => onSarAction('reconstruct')}
-          disabled={!hasBscan}
-          className={cn(
-            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
-            'transition-all duration-500 cursor-pointer',
-            'disabled:cursor-not-allowed disabled:opacity-40',
-            hasBscan
-              ? 'bg-emerald-500/8 border-emerald-500/30 hover:border-emerald-500/50'
-              : 'bg-[#0a0a0a]/50 border-white/5',
-          )}
-        >
-          <div className={cn(
-            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
-            hasBscan ? 'bg-emerald-500/15' : 'bg-white/5',
-          )}>
-            <div className="w-3 h-3 rounded-sm border-2 border-current text-emerald-400" />
-          </div>
-          <div className="flex flex-col gap-0.5 text-left min-w-0">
-            <span className="text-sm font-semibold text-white">
-              Run SAR
-            </span>
-            <span className="text-xs text-[#555555] leading-relaxed">
-              {!hasBscan ? 'Need B-scan data (≥2 positions)' :
-               `Backproject ${bscanData.length} positions → ${pixelsX}×${pixelsZ} image`}
-            </span>
-          </div>
-        </button>
-
-        {sarResult && (
-          <div className="grid grid-cols-2 gap-2 mt-1">
-            <InfoTile label="Time" value={`${sarResult.computeTimeMs} ms`} />
-            <InfoTile label="Size" value={`${sarResult.pixelsX}×${sarResult.pixelsZ}`} />
-          </div>
-        )}
       </Section>
     </>
   );

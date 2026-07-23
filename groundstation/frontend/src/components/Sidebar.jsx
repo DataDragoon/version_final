@@ -1,4 +1,4 @@
-import { Activity, Eye, Radio, Radar, ScanLine, Wrench, ChevronLeft, Wifi, WifiOff, Grid3x3 } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, ChevronLeft, Wifi, WifiOff, Grid3x3, Droplets } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
@@ -7,15 +7,17 @@ import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
 import HwCalPanel from './HwCalPanel';
 import SarPanel from './SarPanel';
+import SeepagePanel from './SeepagePanel';
 
 const PANELS = [
+  { id: 'hwcal',     label: 'HW Cal',    icon: Wrench,    accent: '#A78BFA', accentTo: '#C4B5FD' },
   { id: 'imu',       label: 'IMU',       icon: Activity,  accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye,       accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio,  accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar,     accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine,  accent: '#D1855C', accentTo: '#E5A986' },
-  { id: 'hwcal',     label: 'HW Cal',    icon: Wrench,    accent: '#A78BFA', accentTo: '#C4B5FD' },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3,   accent: '#4ade80', accentTo: '#86efac' },
+  { id: 'seepage',   label: 'Seepage',   icon: Droplets,  accent: '#38bdf8', accentTo: '#7dd3fc' },
 ];
 
 export default function Sidebar({
@@ -61,11 +63,18 @@ export default function Sidebar({
   onSvdStrengthChange,
   hwCalStatus,
   onHwCalAction,
-  bscanDataForSar,
+  sarBscanData,
   sarParams,
   onSarParamsChange,
-  onSarAction,
   sarResult,
+  sarProgress,
+  seepageData,
+  seepageCapturing,
+  onSeepageAction,
+  seepageParams,
+  onSeepageParamsChange,
+  seepageProgress,
+  seepageRef,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -242,12 +251,24 @@ export default function Sidebar({
               )}
               {activePanel === 'sar' && (
                 <SarPanel
-                  bscanData={bscanDataForSar}
-                  bscanParams={bscanParams}
+                  bscanData={sarBscanData}
                   sarParams={sarParams}
                   onSarParamsChange={onSarParamsChange}
-                  onSarAction={onSarAction}
                   sarResult={sarResult}
+                  sarProgress={sarProgress}
+                />
+              )}
+              {activePanel === 'seepage' && (
+                <SeepagePanel
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
+                  scanData={seepageData}
+                  scanCapturing={seepageCapturing}
+                  onScanAction={onSeepageAction}
+                  params={seepageParams}
+                  onParamsChange={onSeepageParamsChange}
+                  progress={seepageProgress}
+                  hasReference={!!seepageRef}
                 />
               )}
             </div>

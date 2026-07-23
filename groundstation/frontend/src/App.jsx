@@ -2,8 +2,9 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
-import { runBackprojection } from './lib/sar';
-import { svdFilter, svdFilterComplex } from './lib/svd';
+import { useSarWorker } from './hooks/useSarWorker';
+import { useSeepageWorker } from './hooks/useSeepageWorker';
+import { svdFilter } from './lib/svd';
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -74,14 +75,6 @@ export default function App() {
     return svdFilter(bscanData, svdK, svdStrength);
   }, [bscanData, svdEnabled, svdK, svdStrength]);
 
-  const filteredBscanDataForSar = useMemo(() => {
-    if (!svdEnabled || bscanData.length < 2) return bscanData;
-    const hasComplex = bscanData[0]?.h_cal_real && bscanData[0]?.h_cal_imag;
-    if (hasComplex) {
-      return svdFilterComplex(bscanData, svdK, svdStrength);
-    }
-    return svdFilter(bscanData, svdK, svdStrength);
-  }, [bscanData, svdEnabled, svdK, svdStrength]);
 
   // SAR state
   const [sarParams, setSarParams] = useState({
@@ -92,10 +85,31 @@ export default function App() {
     lateralMin: undefined,
     lateralMax: undefined,
     meanSubtract: true,
-    dbFloor: -60,
-    dbCeil: -10,
+    svdEnabled: true,
+    svdK: 2,
+    window: 'blackman-harris',
+    dbFloor: -85,
+    dbCeil: -60,
   });
-  const [sarResult, setSarResult] = useState(null);
+
+  const { sarResult, sarProgress } = useSarWorker(bscanData, bscanParams, sarParams);
+
+  // Seepage state
+  const [seepageData, setSeepageData] = useState([]);
+  const [seepageCapturing, setSeepageCapturing] = useState(false);
+  const seepagePendingRef = useRef(null);
+  const [seepageRef, setSeepageRef] = useState(null);
+  const [seepageParams, setSeepageParams] = useState({
+    stepSize: 5,
+    wallThickness: 15,
+    mode: 'amplitude',
+    dbFloor: -50,
+    dbCeil: -20,
+    slopeMin: 2,
+    slopeMax: 15,
+  });
+
+  const { result: seepageResult, progress: seepageProgress } = useSeepageWorker(seepageData, seepageParams, seepageRef);
 
   // HW Calibration state
   const [hwCalStatus, setHwCalStatus] = useState({
@@ -164,6 +178,26 @@ export default function App() {
         setBscanBgCaptured(true);
         bscanPendingRef.current = null;
         setBscanCapturing(false);
+      } else if (seepagePendingRef.current === 'capture') {
+        const posData = { magnitudes: [...msg.magnitudes], distances: [...msg.distances] };
+        if (msg.h_cal_real && msg.h_cal_imag) {
+          posData.h_cal_real = [...msg.h_cal_real];
+          posData.h_cal_imag = [...msg.h_cal_imag];
+          posData.freqs = [...msg.freqs];
+        }
+        setSeepageData(prev => [...prev, posData]);
+        seepagePendingRef.current = null;
+        setSeepageCapturing(false);
+      } else if (seepagePendingRef.current === 'capture_ref') {
+        const refData = {};
+        if (msg.h_cal_real && msg.h_cal_imag) {
+          refData.h_cal_real = [...msg.h_cal_real];
+          refData.h_cal_imag = [...msg.h_cal_imag];
+          refData.freqs = [...msg.freqs];
+        }
+        setSeepageRef(refData);
+        seepagePendingRef.current = null;
+        setSeepageCapturing(false);
       } else {
         setSfcwResult(msg);
       }
@@ -176,6 +210,10 @@ export default function App() {
       if (bscanPendingRef.current) {
         bscanPendingRef.current = null;
         setBscanCapturing(false);
+      }
+      if (seepagePendingRef.current) {
+        seepagePendingRef.current = null;
+        setSeepageCapturing(false);
       }
     } else if (msg.type === 'hwcal_result') {
       const mode = msg.mode; // 'cable_thru' | 'free_space' | 'per_position'
@@ -318,13 +356,63 @@ export default function App() {
     }
   }, [sendSdr]);
 
-  const handleSarAction = useCallback((action) => {
-    if (action === 'reconstruct') {
-      if (filteredBscanDataForSar.length < 2) return;
-      const result = runBackprojection(filteredBscanDataForSar, bscanParams, sarParams);
-      setSarResult(result);
+  const handleSeepageAction = useCallback((action) => {
+    if (action === 'capture') {
+      seepagePendingRef.current = 'capture';
+      setSeepageCapturing(true);
+      sendSdr({ cmd: 'bscan_capture' });
+    } else if (action === 'capture_ref') {
+      seepagePendingRef.current = 'capture_ref';
+      setSeepageCapturing(true);
+      sendSdr({ cmd: 'bscan_capture' });
+    } else if (action === 'clear_ref') {
+      setSeepageRef(null);
+    } else if (action === 'new') {
+      setSeepageData([]);
+    } else if (action === 'undo') {
+      setSeepageData(prev => prev.slice(0, -1));
+    } else if (action === 'export') {
+      const exportData = {
+        version: 1,
+        type: 'seepage',
+        timestamp: new Date().toISOString(),
+        params: seepageParams,
+        sfcwParams: sfcwParams,
+        data: seepageData,
+      };
+      const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `seepage_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else if (action === 'import') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            if (imported.data && Array.isArray(imported.data)) {
+              setSeepageData(imported.data);
+              if (imported.params) {
+                setSeepageParams(prev => ({ ...prev, ...imported.params }));
+              }
+            }
+          } catch (err) {
+            console.error('Failed to import seepage scan:', err);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
     }
-  }, [filteredBscanDataForSar, bscanParams, sarParams]);
+  }, [sendSdr, seepageData, seepageParams, sfcwParams]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -413,11 +501,18 @@ export default function App() {
         onSvdStrengthChange={setSvdStrength}
         hwCalStatus={hwCalStatus}
         onHwCalAction={handleHwCalAction}
-        bscanDataForSar={filteredBscanDataForSar}
+        sarBscanData={bscanData}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}
-        onSarAction={handleSarAction}
         sarResult={sarResult}
+        sarProgress={sarProgress}
+        seepageData={seepageData}
+        seepageCapturing={seepageCapturing}
+        onSeepageAction={handleSeepageAction}
+        seepageParams={seepageParams}
+        onSeepageParamsChange={setSeepageParams}
+        seepageProgress={seepageProgress}
+        seepageRef={seepageRef}
       />
       <Viewport
         activePanel={activePanel}
@@ -441,7 +536,11 @@ export default function App() {
         hwCalResult={hwCalResult}
         hwCalMode={hwCalMode}
         sarResult={sarResult}
+        sarProgress={sarProgress}
         sarParams={sarParams}
+        seepageResult={seepageResult}
+        seepageProgress={seepageProgress}
+        seepageParams={seepageParams}
       />
     </div>
   );

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, Wrench, Zap, Grid3x3 } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Wrench, Zap, Grid3x3, Droplets } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -9,6 +9,7 @@ import SfcwDisplay from './SfcwDisplay';
 import BscanDisplay from './BscanDisplay';
 import HwCalDisplay from './HwCalDisplay';
 import SarDisplay from './SarDisplay';
+import SeepageDisplay from './SeepageDisplay';
 
 export default function Viewport({
   activePanel,
@@ -32,7 +33,11 @@ export default function Viewport({
   hwCalResult,
   hwCalMode,
   sarResult,
+  sarProgress,
   sarParams,
+  seepageResult,
+  seepageProgress,
+  seepageParams,
 }) {
   if (!activePanel) {
     return (
@@ -235,9 +240,66 @@ export default function Viewport({
               </div>
             )}
             <SarDisplay sarResult={sarResult} sarParams={sarParams} />
-            {!sarResult && (
+            {!sarResult && sarProgress === null && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No SAR image</span>
+              </div>
+            )}
+            {sarProgress !== null && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="flex flex-col items-center gap-3">
+                  <span className="text-xs text-emerald-400 uppercase tracking-widest font-medium">
+                    Reconstructing {Math.round(sarProgress * 100)}%
+                  </span>
+                  <div className="h-1 w-48 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 rounded-full transition-[width] duration-100"
+                      style={{ width: `${sarProgress * 100}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activePanel === 'seepage') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Droplets} label="Seepage Detection" active={!!seepageResult} color="cyan" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {seepageResult && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#38bdf8]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <SeepageDisplay
+              result={seepageResult}
+              params={seepageParams}
+              progress={seepageProgress}
+            />
+            {!seepageResult && seepageProgress === null && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
+              </div>
+            )}
+            {seepageProgress !== null && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="flex flex-col items-center gap-3">
+                  <span className="text-xs text-sky-400 uppercase tracking-widest font-medium">
+                    Processing {Math.round(seepageProgress * 100)}%
+                  </span>
+                  <div className="h-1 w-48 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full bg-sky-500 rounded-full transition-[width] duration-100"
+                      style={{ width: `${seepageProgress * 100}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>

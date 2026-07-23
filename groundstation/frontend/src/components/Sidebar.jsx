@@ -53,6 +53,10 @@ export default function Sidebar({
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
+  svdEnabled,
+  svdK,
+  onSvdEnabledChange,
+  onSvdKChange,
   hwCalStatus,
   onHwCalAction,
   bscanDataForSar,
@@ -217,6 +221,10 @@ export default function Sidebar({
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
                   sfcwParams={sfcwParams}
+                  svdEnabled={svdEnabled}
+                  svdK={svdK}
+                  onSvdEnabledChange={onSvdEnabledChange}
+                  onSvdKChange={onSvdKChange}
                 />
               )}
               {activePanel === 'hwcal' && (

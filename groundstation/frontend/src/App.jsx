@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
 import { runBackprojection } from './lib/sar';
+import { svdFilter, svdFilterComplex } from './lib/svd';
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -62,6 +63,24 @@ export default function App() {
     distMin: 0,
     distMax: null,  // null = auto (full range)
   });
+
+  // SVD filter state
+  const [svdEnabled, setSvdEnabled] = useState(false);
+  const [svdK, setSvdK] = useState(1);
+
+  const filteredBscanData = useMemo(() => {
+    if (!svdEnabled || bscanData.length < 2) return bscanData;
+    return svdFilter(bscanData, svdK);
+  }, [bscanData, svdEnabled, svdK]);
+
+  const filteredBscanDataForSar = useMemo(() => {
+    if (!svdEnabled || bscanData.length < 2) return bscanData;
+    const hasComplex = bscanData[0]?.h_cal_real && bscanData[0]?.h_cal_imag;
+    if (hasComplex) {
+      return svdFilterComplex(bscanData, svdK);
+    }
+    return svdFilter(bscanData, svdK);
+  }, [bscanData, svdEnabled, svdK]);
 
   // SAR state
   const [sarParams, setSarParams] = useState({
@@ -300,11 +319,11 @@ export default function App() {
 
   const handleSarAction = useCallback((action) => {
     if (action === 'reconstruct') {
-      if (bscanData.length < 2) return;
-      const result = runBackprojection(bscanData, bscanParams, sarParams);
+      if (filteredBscanDataForSar.length < 2) return;
+      const result = runBackprojection(filteredBscanDataForSar, bscanParams, sarParams);
       setSarResult(result);
     }
-  }, [bscanData, bscanParams, sarParams]);
+  }, [filteredBscanDataForSar, bscanParams, sarParams]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -385,9 +404,13 @@ export default function App() {
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
+        svdEnabled={svdEnabled}
+        svdK={svdK}
+        onSvdEnabledChange={setSvdEnabled}
+        onSvdKChange={setSvdK}
         hwCalStatus={hwCalStatus}
         onHwCalAction={handleHwCalAction}
-        bscanDataForSar={bscanData}
+        bscanDataForSar={filteredBscanDataForSar}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}
         onSarAction={handleSarAction}
@@ -408,7 +431,7 @@ export default function App() {
         sfcwResult={sfcwResult}
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
-        bscanData={bscanData}
+        bscanData={filteredBscanData}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
         sfcwParams={sfcwParams}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, onSvdEnabledChange, onSvdKChange }) {
   const { stepSize, numPositions, dbFloor, dbCeil, distMin, distMax } = params;
 
   const update = (key, value) => {
@@ -165,6 +165,32 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
             Import
           </button>
         </div>
+      </Section>
+
+      {/* SVD Filter */}
+      <Section label="SVD Filter">
+        <button
+          onClick={() => onSvdEnabledChange(!svdEnabled)}
+          disabled={scanData.length < 2}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            scanData.length < 2
+              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+              : svdEnabled
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {svdEnabled ? '● SVD ON' : 'SVD OFF'}
+        </button>
+        <EditableField
+          label="k (remove)"
+          value={svdK}
+          unit=""
+          onChange={(v) => onSvdKChange(Math.round(v))}
+          min={1}
+          max={Math.max(1, scanData.length - 1)}
+        />
       </Section>
 
       {/* Display Controls */}

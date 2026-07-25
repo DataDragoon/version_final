@@ -351,8 +351,8 @@ class FMCWEngine:
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
         else:
-            # Capture 2× chirp length so we can align to chirp boundary
-            rx_samples = self._chirp_samples * 2
+            # Capture 3× chirp length so we can reliably find chirp boundary
+            rx_samples = self._chirp_samples * 3
             self.driver.start_tx()
             self.driver.start_rx(self._rx_capture_single, num_samples=rx_samples)
             time.sleep(0.05)
@@ -667,8 +667,10 @@ class FMCWEngine:
         (instantaneous frequency drops by BW in one sample). Detect this spike to
         find where the chirp restarts.
 
-        Returns the sample index right after the wrap (start of a new chirp cycle),
-        or 0 if the wrap is at the very edge (meaning first samples_per_chirp are clean).
+        With 3× capture, we search the middle portion (skip first 10% of a chirp
+        for unwrap warmup, ensure samples_per_chirp remains after the found wrap).
+
+        Returns the sample index right after the wrap (start of a new chirp cycle).
         """
         n_rx = len(rx_iq)
 
@@ -679,23 +681,24 @@ class FMCWEngine:
         # Second derivative: ~constant during linear chirp sweep, large negative at wrap
         freq_accel = np.diff(inst_freq)
 
-        # Search only the first chirp+margin to ensure room for extraction after wrap
+        # Skip early samples where unwrap has no context
+        search_start = max(10, samples_per_chirp // 10)
+        # Ensure we can extract a full chirp after the wrap
         search_end = min(len(freq_accel), n_rx - samples_per_chirp - 2)
-        if search_end < 10:
+        if search_end <= search_start:
             return 0
 
         # The wrap causes a spike of approximately -2π × BW / sample_rate
         # For 20 MHz BW at 25 MSPS: spike ≈ -5.0 rad
-        # Normal chirp acceleration ≈ 0.004 rad. Threshold at -0.5 rad is safe.
-        min_idx = int(np.argmin(freq_accel[:search_end]))
-        spike_val = freq_accel[min_idx]
+        region = freq_accel[search_start:search_end]
+        min_idx = int(np.argmin(region))
+        spike_val = region[min_idx]
 
-        # Validate: if the spike isn't significantly negative, the wrap is at the
-        # capture boundary (sample 0 or beyond search_end) — first segment is clean
+        # Validate: threshold at -0.5 rad (normal acceleration is ~0.004 rad)
         if spike_val > -0.5:
             return 0
 
-        wrap_idx = min_idx + 2
+        wrap_idx = search_start + min_idx + 2
         return wrap_idx
 
     def _capture_sweep_single(self):

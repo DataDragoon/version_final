@@ -36,7 +36,7 @@ class FMCWEngine:
         self.start_freq = 1_000_000_000
         self.stop_freq = 6_000_000_000
         # FMCW-specific parameters
-        self.sub_band_bw = 30_000_000       # 30 MHz per chirp (single-channel 40 MSPS)
+        self.sub_band_bw = 25_000_000       # 25 MHz per chirp (single-channel, good filter margin)
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 8             # chirps to average per sub-band
@@ -285,7 +285,7 @@ class FMCWEngine:
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
 
-        required_rate = int(self.sub_band_bw * 1.25)  # 25% margin over chirp BW
+        required_rate = int(self.sub_band_bw * 1.5)  # 50% margin over chirp BW for clean filter passband
 
         if self.use_reference_channel:
             # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel

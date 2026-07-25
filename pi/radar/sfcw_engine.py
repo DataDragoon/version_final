@@ -30,12 +30,22 @@ class SFCWEngine:
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 4
-        self.tx1_gain = 30
+        self.tx1_gain = 56
         self.rx1_gain = 30
         self.tx2_gain = 30
         self.rx2_gain = 20
         self.rx_gain_min = 5
         self.rx_gain_max = 38
+        # Empirical gain-vs-frequency table (from RF Calib measurements)
+        self._gain_table = [
+            (915_000_000, 41, 30),
+            (1_000_000_000, 42, 30),
+            (2_000_000_000, 54, 30),
+            (3_000_000_000, 66, 30),
+            (4_000_000_000, 66, 36),
+            (5_000_000_000, 65, 30),
+            (6_000_000_000, 66, 42),
+        ]
         self.range_offset = 0.55
         self.running = False
         self._stop_event = threading.Event()
@@ -154,6 +164,17 @@ class SFCWEngine:
         if self.step_size == 0:
             return float('inf')
         return SPEED_OF_LIGHT / (2 * self.step_size)
+
+    def _interpolate_gains(self, freqs_hz):
+        """Interpolate TX and RX gains from empirical gain table."""
+        table = sorted(self._gain_table, key=lambda x: x[0])
+        cal_freqs = np.array([t[0] for t in table], dtype=np.float64)
+        cal_tx = np.array([t[1] for t in table], dtype=np.float64)
+        cal_rx = np.array([t[2] for t in table], dtype=np.float64)
+        freqs = np.asarray(freqs_hz, dtype=np.float64)
+        tx_gains = np.interp(freqs, cal_freqs, cal_tx).astype(int)
+        rx_gains = np.interp(freqs, cal_freqs, cal_rx).astype(int)
+        return tx_gains, rx_gains
 
     def set_params(self, **kwargs):
         with self._lock:
@@ -344,22 +365,24 @@ class SFCWEngine:
         rx_ch = bladerf.CHANNEL_RX(0)
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
-        # Dynamic RX gain ramp: compensates AD9361 output power rolloff at higher
-        # frequencies. Both RX1 and RX2 get identical gain at each step so any
+        # Dynamic gain ramp from empirical calibration table — both TX and RX
+        # are adjusted per-step to compensate AD9361 output power rolloff.
+        # Both RX1 and RX2 get identical gain at each step so any
         # gain-dependent phase offset cancels in the h_signal/h_reference division.
-        freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
-        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+        tx_gains, rx_gains = self._interpolate_gains(freqs)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
-            g = int(rx_gains[i])
+            tx_g = int(tx_gains[i])
+            rx_g = int(rx_gains[i])
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
             time.sleep(settle)
 
             # Discard first buffer — may contain samples from before PLL settled
@@ -620,23 +643,25 @@ class SFCWEngine:
         rx_ch = bladerf.CHANNEL_RX(0)
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
-        # Gain ramp: cable_thru uses fixed gain, others use dynamic ramp
+        # Gain ramp: cable_thru uses fixed gain, others use empirical table
         if mode == 'cable_thru':
+            tx_gains = np.full(num_steps, 20, dtype=int)
             rx_gains = np.full(num_steps, 20, dtype=int)
         else:
-            freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
-            rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+            tx_gains, rx_gains = self._interpolate_gains(freqs)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
-            g = int(rx_gains[i])
+            tx_g = int(tx_gains[i])
+            rx_g = int(rx_gains[i])
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
             time.sleep(settle)
 
             # Discard first buffer

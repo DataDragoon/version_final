@@ -189,7 +189,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 unit="dB"
                 onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
                 min={0}
-                max={30}
+                max={66}
               />
               <EditableField
                 label="RX1"

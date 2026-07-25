@@ -47,10 +47,21 @@ class FMCWEngine:
         # perfect local reference and boundary correction for inter-sub-band stitching.
         self.use_reference_channel = False
         # Gain parameters
-        self.tx1_gain = 30
+        self.tx1_gain = 56
         self.rx1_gain = 30
         self.tx2_gain = 30
         self.rx2_gain = 20
+        # Empirical gain-vs-frequency table (from RF Calib measurements)
+        # Format: (freq_hz, tx_gain, rx_gain)
+        self._gain_table = [
+            (915_000_000, 41, 30),
+            (1_000_000_000, 42, 30),
+            (2_000_000_000, 54, 30),
+            (3_000_000_000, 66, 30),
+            (4_000_000_000, 66, 36),
+            (5_000_000_000, 65, 30),
+            (6_000_000_000, 66, 42),
+        ]
         self.rx_gain_min = 5
         self.rx_gain_max = 38
         self.range_offset = 2.26
@@ -108,6 +119,21 @@ class FMCWEngine:
         """Equivalent number of frequency points in the stitched spectrum."""
         samples_per_chirp = int(self.chirp_duration * self.driver.sample_rate)
         return self.num_sub_bands * samples_per_chirp
+
+    def _interpolate_gains(self, freqs_hz):
+        """Interpolate TX and RX gains from empirical gain table.
+
+        Returns (tx_gains, rx_gains) arrays matching the input frequency array.
+        Uses linear interpolation between calibration points; clamps at boundaries.
+        """
+        table = sorted(self._gain_table, key=lambda x: x[0])
+        cal_freqs = np.array([t[0] for t in table], dtype=np.float64)
+        cal_tx = np.array([t[1] for t in table], dtype=np.float64)
+        cal_rx = np.array([t[2] for t in table], dtype=np.float64)
+        freqs = np.asarray(freqs_hz, dtype=np.float64)
+        tx_gains = np.interp(freqs, cal_freqs, cal_tx).astype(int)
+        rx_gains = np.interp(freqs, cal_freqs, cal_rx).astype(int)
+        return tx_gains, rx_gains
 
     def set_params(self, **kwargs):
         with self._lock:
@@ -282,6 +308,7 @@ class FMCWEngine:
                 self._callback({'error': str(e)})
         finally:
             self._stop_tx_rx()
+            self._restore_hardware()
             self.running = False
 
     @staticmethod
@@ -388,6 +415,28 @@ class FMCWEngine:
             self.driver.stop_rx()
             self.driver.stop_tx()
         time.sleep(0.05)
+
+    def _restore_hardware(self):
+        """Restore driver to RF Calib defaults (2 MSPS, CW waveform).
+
+        FMCW sets 30.72 MSPS and chirp waveform — if not restored, the RF Calib
+        panel sees garbage because its sync_config buffer sizes assume 2 MSPS.
+        """
+        try:
+            self.driver.sample_rate = 2_000_000
+            self.driver.bandwidth = 1_500_000
+            self.driver.waveform_type = 'cw'
+            dev_ptr = self.driver.device.dev[0]
+            tx_ch = bladerf.CHANNEL_TX(0)
+            rx_ch = bladerf.CHANNEL_RX(0)
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, 2_000_000, ffi.NULL)
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, 2_000_000, ffi.NULL)
+            libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, 1_500_000, ffi.NULL)
+            libbladeRF.bladerf_set_bandwidth(dev_ptr, rx_ch, 1_500_000, ffi.NULL)
+            self.driver._tx_buffer = self.driver._generate(int(self.driver.sample_rate * 0.01))
+            print("[fmcw] Hardware restored to RF Calib defaults (2 MSPS, CW)")
+        except Exception as e:
+            print(f"[fmcw] Warning: failed to restore hardware: {e}")
 
     def _rx_capture_dual(self, rx1_iq, rx2_iq):
         self._rx_latest = (rx1_iq, rx2_iq)
@@ -620,19 +669,20 @@ class FMCWEngine:
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
         center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
-        freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
-        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+        tx_gains, rx_gains = self._interpolate_gains(center_freqs)
 
         for i in range(num_sub):
             if self._stop_event.is_set():
                 return None, None, None, None
 
             center = int(center_freqs[i])
-            g = int(rx_gains[i])
+            tx_g = int(tx_gains[i])
+            rx_g = int(rx_gains[i])
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, center)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, center)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
             time.sleep(pll_settle)
 
             for _ in range(1 + self.discard_buffers):
@@ -781,18 +831,19 @@ class FMCWEngine:
         rx_ch = bladerf.CHANNEL_RX(0)
 
         center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
-        freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
-        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+        tx_gains, rx_gains = self._interpolate_gains(center_freqs)
 
         for i in range(num_sub):
             if self._stop_event.is_set():
                 return None, None, None, None
 
             center = int(center_freqs[i])
-            g = int(rx_gains[i])
+            tx_g = int(tx_gains[i])
+            rx_g = int(rx_gains[i])
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, center)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, center)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
             time.sleep(pll_settle)
 
             for _ in range(1 + self.discard_buffers):

@@ -198,7 +198,7 @@ export default function App() {
       setSfcwRunning(msg.running);
       setSfcwStatus(prev => ({ ...prev, fmcw_running: msg.running, sweep_mode: msg.sweep_mode }));
     } else if (msg.type === 'sfcw_status') {
-      setSfcwRunning(msg.running);
+      setSfcwRunning(msg.running || msg.fmcw_running || false);
       setSfcwStatus(msg);
       if (msg.sweep_mode) setSweepMode(msg.sweep_mode);
       if (msg.background_active !== undefined) {

@@ -811,28 +811,27 @@ class FMCWEngine:
                     'freq_mhz': center / 1e6,
                 })
 
-        # --- Overlap correlation stitching ---
-        # Each sub-band still has a constant phase offset (PLL lands at random phase).
-        # The overlap region between adjacent sub-bands covers the same frequencies,
-        # so their beat signals should match up to a phase offset.
-        # Output: non-overlapping portion of each sub-band, uniformly spaced.
+        # --- Phase stitching ---
+        # Each sub-band has a random PLL phase offset. We correct by enforcing
+        # phase continuity at sub-band boundaries in the concatenated signal.
+        # Overlap correlation is unreliable for short-delay targets (near-DC beat)
+        # where hardware DC offsets and filter ripple dominate the correlation.
         non_overlap = samples_per_chirp - overlap_samples
 
-        # Phase-correct all segments relative to segment 0
-        for i in range(1, num_sub):
-            prev_overlap = beat_segments[i - 1][-overlap_samples:]
-            curr_overlap = beat_segments[i][:overlap_samples]
-
-            corr = np.sum(curr_overlap * np.conj(prev_overlap))
-            if np.abs(corr) > 0:
-                phase_offset = np.exp(-1j * np.angle(corr))
-            else:
-                phase_offset = 1.0
-
-            beat_segments[i] = beat_segments[i] * phase_offset
-
-        # Concatenate non-overlapping portions (uniform spc for all sub-bands)
+        # Concatenate non-overlapping portions first
         stitched = np.concatenate([seg[:non_overlap] for seg in beat_segments])
+
+        # Boundary phase correction: enforce continuity at each sub-band junction.
+        # Use small window average (8 samples) for noise robustness.
+        win = 8
+        for i in range(1, num_sub):
+            boundary = i * non_overlap
+            if boundary >= len(stitched):
+                break
+            prev_avg = np.mean(stitched[max(0, boundary - win):boundary])
+            curr_avg = np.mean(stitched[boundary:min(len(stitched), boundary + win)])
+            phi_err = np.angle(curr_avg * np.conj(prev_avg))
+            stitched[boundary:] *= np.exp(-1j * phi_err)
 
         ref_phase = np.zeros(num_sub, dtype=np.complex128)
 

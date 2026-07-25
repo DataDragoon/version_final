@@ -41,8 +41,11 @@ class FMCWEngine:
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 8             # chirps to average per sub-band
         self.overlap_fraction = 0.25        # 25% overlap for correlation stitching
-        # Reference channel mode: True = dual-channel with TX2→RX2 cable reference (default)
-        self.use_reference_channel = True
+        # Reference channel mode: False = single-channel with boundary correction (default)
+        # Dual-channel (RX1*conj(RX2)) has analog filter mismatch between channels
+        # that introduces ~45° intra-sub-band phase error. Single-channel uses a
+        # perfect local reference and boundary correction for inter-sub-band stitching.
+        self.use_reference_channel = False
         # Gain parameters
         self.tx1_gain = 30
         self.rx1_gain = 30
@@ -347,8 +350,11 @@ class FMCWEngine:
                                  amplitude=0.9)
 
         if self.use_reference_channel:
+            # Capture 3× chirp length for alignment (same as single-channel)
+            rx_samples = self._chirp_samples * 3
+            rx_samples = ((rx_samples + 1023) // 1024) * 1024
             self.driver.start_tx_dual()
-            self.driver.start_rx_dual(self._rx_capture_dual, num_samples=self._chirp_samples)
+            self.driver.start_rx_dual(self._rx_capture_dual, num_samples=rx_samples)
             time.sleep(0.05)
             dev_ptr = self.driver.device.dev[0]
             libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
@@ -584,7 +590,7 @@ class FMCWEngine:
             return self._capture_sweep_single()
 
     def _capture_sweep_dual(self):
-        """Dual-channel sweep: RX1*conj(RX2) de-chirp."""
+        """Dual-channel sweep: RX1*conj(RX2) de-chirp with chirp alignment."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -597,6 +603,8 @@ class FMCWEngine:
         sub_step = int(sub_bw * (1.0 - overlap))
         num_sub = int(np.ceil((stop - start) / sub_step))
         samples_per_chirp = int(chirp_dur * self.driver.sample_rate)
+
+        chirp_ref = self._generate_chirp_iq(samples_per_chirp)
 
         beat_signal = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
         ref_phase = np.zeros(num_sub, dtype=np.complex128)
@@ -626,9 +634,7 @@ class FMCWEngine:
                 self._rx_event.clear()
                 self._rx_event.wait(timeout=1.0)
 
-            sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
-            ref_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
-            captured = 0
+            beats = []
 
             for _ in range(num_avg):
                 self._rx_event.clear()
@@ -641,19 +647,33 @@ class FMCWEngine:
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 i2 = rx2[0::2].astype(np.float64) / 2047.0
                 q2 = rx2[1::2].astype(np.float64) / 2047.0
-                n_rx = min(len(i1), samples_per_chirp)
-                sig_accum[:n_rx] += (i1[:n_rx] + 1j * q1[:n_rx])
-                ref_accum[:n_rx] += (i2[:n_rx] + 1j * q2[:n_rx])
-                captured += 1
+                rx1_iq = i1 + 1j * q1
+                rx2_iq = i2 + 1j * q2
 
-            if captured > 0:
-                sig_accum /= captured
-                ref_accum /= captured
+                # Align to chirp start using RX2 (reference cable — strong, clean)
+                wrap_idx = self._find_chirp_wrap(rx2_iq, chirp_ref, samples_per_chirp)
+                if wrap_idx + samples_per_chirp <= len(rx1_iq):
+                    seg1 = rx1_iq[wrap_idx:wrap_idx + samples_per_chirp]
+                    seg2 = rx2_iq[wrap_idx:wrap_idx + samples_per_chirp]
+                    beat = seg1 * np.conj(seg2)
+                    beats.append(beat)
+
+            if len(beats) == 0:
+                beat_avg = np.zeros(samples_per_chirp, dtype=np.complex128)
+            elif len(beats) <= 2:
+                beat_avg = np.mean(beats, axis=0)
+            else:
+                beats_arr = np.array(beats)
+                median_beat = np.median(beats_arr.real, axis=0) + 1j * np.median(beats_arr.imag, axis=0)
+                scores = np.array([np.abs(np.vdot(b, median_beat)) for b in beats])
+                threshold = 0.5 * np.max(scores)
+                good = beats_arr[scores >= threshold]
+                beat_avg = np.mean(good, axis=0)
 
             idx_start = i * samples_per_chirp
             idx_end = idx_start + samples_per_chirp
-            beat_signal[idx_start:idx_end] = sig_accum * np.conj(ref_accum)
-            ref_phase[i] = ref_accum[samples_per_chirp // 2]
+            beat_signal[idx_start:idx_end] = beat_avg
+            ref_phase[i] = beat_avg[samples_per_chirp // 2]
 
             if self._callback and i % 5 == 0:
                 self._callback({

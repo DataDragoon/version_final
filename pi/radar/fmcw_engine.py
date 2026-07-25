@@ -40,7 +40,9 @@ class FMCWEngine:
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 4             # chirps to average per sub-band
-        self.overlap_fraction = 0.0         # 0 = no overlap, 0.1 = 10% overlap
+        self.overlap_fraction = 0.25        # 25% overlap for correlation stitching
+        # Reference channel mode: False = single-channel with overlap stitching (default)
+        self.use_reference_channel = False
         # Gain parameters
         self.tx1_gain = 30
         self.rx1_gain = 30
@@ -136,6 +138,8 @@ class FMCWEngine:
                 self.range_offset = float(kwargs['range_offset'])
             if 'discard_buffers' in kwargs:
                 self.discard_buffers = max(0, int(kwargs['discard_buffers']))
+            if 'use_reference_channel' in kwargs:
+                self.use_reference_channel = bool(kwargs['use_reference_channel'])
 
     def get_params(self):
         return {
@@ -162,6 +166,8 @@ class FMCWEngine:
             'sub_mode': self._sub_mode,
             'mean_subtraction': self._mean_subtraction_enabled,
             'mean_count': self._mean_count,
+            'use_reference_channel': self.use_reference_channel,
+            'channel_cal_loaded': self.has_channel_cal(),
         }
 
     def capture_background(self):
@@ -278,24 +284,49 @@ class FMCWEngine:
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
-        self.driver.tx2_gain = self.tx2_gain
-        self.driver.rx2_gain = self.rx2_gain
 
-        # FMCW requires sample rate > chirp bandwidth (Nyquist).
-        # bladeRF 2.0 MIMO max is ~30.72 MSPS per channel.
-        # Set sample rate to cover the sub-band chirp with margin.
         required_rate = int(self.sub_band_bw * 1.25)  # 25% margin over chirp BW
-        max_mimo_rate = 30_720_000
-        fmcw_rate = min(required_rate, max_mimo_rate)
-        # Enforce minimum 4 MSPS for stable streaming
-        fmcw_rate = max(fmcw_rate, 4_000_000)
 
-        self.driver.sample_rate = fmcw_rate
-        self.driver.bandwidth = int(fmcw_rate * 0.8)
+        if self.use_reference_channel:
+            # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel
+            self.driver.tx2_gain = self.tx2_gain
+            self.driver.rx2_gain = self.rx2_gain
+            max_rate = 30_720_000
+            fmcw_rate = min(required_rate, max_rate)
+            fmcw_rate = max(fmcw_rate, 4_000_000)
+            self.driver.sample_rate = fmcw_rate
+            self.driver.bandwidth = int(fmcw_rate * 0.8)
+            self.driver._configure_channels_dual()
+            mode_str = "dual-channel (reference)"
+        else:
+            # Single-channel: TX1+RX1 only — can go up to 61.44 MSPS
+            max_rate = 61_440_000
+            fmcw_rate = min(required_rate, max_rate)
+            fmcw_rate = max(fmcw_rate, 4_000_000)
+            self.driver.sample_rate = fmcw_rate
+            self.driver.bandwidth = int(fmcw_rate * 0.8)
+            self._configure_single_channel()
+            mode_str = "single-channel (overlap stitch)"
+
         self._fmcw_sample_rate = fmcw_rate
-        print(f"[fmcw] Sample rate set to {fmcw_rate/1e6:.2f} MSPS for {self.sub_band_bw/1e6:.0f} MHz chirp")
+        total_msps = fmcw_rate * (4 if self.use_reference_channel else 2) / 1e6
+        print(f"[fmcw] {mode_str}: {fmcw_rate/1e6:.2f} MSPS, {total_msps:.0f} MSPS total USB throughput")
 
-        self.driver._configure_channels_dual()
+    def _configure_single_channel(self):
+        """Configure TX0 + RX0 only for single-channel FMCW."""
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+        libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, int(self.driver.center_freq))
+        libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.driver.sample_rate), ffi.NULL)
+        libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, int(self.driver.bandwidth), ffi.NULL)
+        libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, int(self.driver.center_freq))
+        libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(self.driver.sample_rate), ffi.NULL)
+        libbladeRF.bladerf_set_bandwidth(dev_ptr, rx_ch, int(self.driver.bandwidth), ffi.NULL)
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch, libbladeRF.BLADERF_GAIN_MGC)
+        libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, int(self.rx1_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, int(self.tx1_gain))
+        print(f"[bladerf] Single-channel configured: TX1={self.tx1_gain}dB RX1={self.rx1_gain}dB")
 
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
@@ -303,30 +334,45 @@ class FMCWEngine:
         samples_per_chirp = int(self.chirp_duration * self.driver.sample_rate)
         self._chirp_samples = max(1024, samples_per_chirp)
 
-        # Configure chirp waveform and start TX FIRST (same as SFCW)
-        # RX sync_rx blocks waiting for samples — TX must already be running
         self.driver.set_waveform('chirp',
                                  chirp_bw=self.sub_band_bw,
                                  chirp_duration=self.chirp_duration,
                                  amplitude=0.9)
-        self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=self._chirp_samples)
-        time.sleep(0.05)
 
-        dev_ptr = self.driver.device.dev[0]
-        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
-        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+        if self.use_reference_channel:
+            self.driver.start_tx_dual()
+            self.driver.start_rx_dual(self._rx_capture_dual, num_samples=self._chirp_samples)
+            time.sleep(0.05)
+            dev_ptr = self.driver.device.dev[0]
+            libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
+            libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+        else:
+            self.driver.start_tx()
+            self.driver.start_rx(self._rx_capture_single, num_samples=self._chirp_samples)
+            time.sleep(0.05)
+            dev_ptr = self.driver.device.dev[0]
+            libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+            libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
 
     def _stop_tx_rx(self):
-        self.driver.stop_rx_dual()
-        self.driver.stop_tx_dual()
+        if self.use_reference_channel:
+            self.driver.stop_rx_dual()
+            self.driver.stop_tx_dual()
+        else:
+            self.driver.stop_rx()
+            self.driver.stop_tx()
 
-    def _rx_capture(self, rx1_iq, rx2_iq):
+    def _rx_capture_dual(self, rx1_iq, rx2_iq):
         self._rx_latest = (rx1_iq, rx2_iq)
+        self._rx_event.set()
+
+    def _rx_capture_single(self, iq):
+        self._rx_latest = (iq, None)
         self._rx_event.set()
 
     def _generate_chirp_iq(self, num_samples):
@@ -346,101 +392,29 @@ class FMCWEngine:
             stop = self.stop_freq
             sub_bw = self.sub_band_bw
             chirp_dur = self.chirp_duration
-            pll_settle = self.pll_settle_time
             num_avg = self.num_chirps_avg
             overlap = self.overlap_fraction
+            pll_settle = self.pll_settle_time
 
-        sub_step = int(sub_bw * (1.0 - overlap))
-        num_sub = int(np.ceil((stop - start) / sub_step))
-        samples_per_chirp = int(chirp_dur * self.driver.sample_rate)
+        # Use unified capture (handles both single and dual channel)
+        beat_signal, _, spc, num_sub = self._capture_single_sweep()
+        if beat_signal is None:
+            return None
 
-        beat_signal = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
-
-        dev_ptr = self.driver.device.dev[0]
-        tx_ch = bladerf.CHANNEL_TX(0)
-        rx_ch = bladerf.CHANNEL_RX(0)
-        rx_ch1 = bladerf.CHANNEL_RX(1)
-
-        center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
-        freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
-        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
-
-        for i in range(num_sub):
-            if self._stop_event.is_set():
-                return None
-
-            center = int(center_freqs[i])
-            g = int(rx_gains[i])
-
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, center)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, center)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
-
-            time.sleep(pll_settle)
-
-            # Discard buffers (1 mandatory + extra for PLL transient decay)
-            for _ in range(1 + self.discard_buffers):
-                self._rx_event.clear()
-                self._rx_event.wait(timeout=1.0)
-
-            sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
-            ref_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
-            captured = 0
-
-            for _ in range(num_avg):
-                self._rx_event.clear()
-                if not self._rx_event.wait(timeout=1.0):
+        # For dual-channel mode, apply boundary stitching (single-channel already stitched)
+        if self.use_reference_channel:
+            for i in range(1, num_sub):
+                boundary = i * spc
+                if boundary >= len(beat_signal):
                     break
-
-                rx1, rx2 = self._rx_latest
-                if rx1 is None or rx2 is None:
-                    continue
-
-                i1 = rx1[0::2].astype(np.float64) / 2047.0
-                q1 = rx1[1::2].astype(np.float64) / 2047.0
-                i2 = rx2[0::2].astype(np.float64) / 2047.0
-                q2 = rx2[1::2].astype(np.float64) / 2047.0
-
-                n_rx = min(len(i1), samples_per_chirp)
-                sig_accum[:n_rx] += (i1[:n_rx] + 1j * q1[:n_rx])
-                ref_accum[:n_rx] += (i2[:n_rx] + 1j * q2[:n_rx])
-                captured += 1
-
-            if captured > 0:
-                sig_accum /= captured
-                ref_accum /= captured
-
-            # De-chirp: RX1 * conj(RX2) — TX/RX timing offset cancels
-            idx_start = i * samples_per_chirp
-            idx_end = idx_start + samples_per_chirp
-            beat_signal[idx_start:idx_end] = sig_accum * np.conj(ref_accum)
-
-            if self._callback and i % 5 == 0:
-                self._callback({
-                    'type': 'progress',
-                    'step': i,
-                    'total': num_sub,
-                    'freq_mhz': center / 1e6,
-                })
-
-        # --- Phase stitching correction at sub-band boundaries ---
-        for i in range(1, num_sub):
-            boundary = i * samples_per_chirp
-            phi_prev = np.angle(beat_signal[boundary - 1])
-            phi_curr = np.angle(beat_signal[boundary])
-            phi_err = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
-            beat_signal[boundary:] *= np.exp(-1j * phi_err)
-
-        # Apply channel calibration if available
-        if self._channel_cal is not None and len(self._channel_cal) == len(beat_signal):
-            cal_mag = np.abs(self._channel_cal)
-            valid = cal_mag > np.max(cal_mag) * 0.01
-            beat_signal[valid] /= self._channel_cal[valid]
+                phi_prev = np.angle(beat_signal[boundary - 1])
+                phi_curr = np.angle(beat_signal[boundary])
+                phi_err = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
+                beat_signal[boundary:] *= np.exp(-1j * phi_err)
 
         h_cal = beat_signal
 
-        total_points = num_sub * samples_per_chirp
+        total_points = len(h_cal)
         freqs = np.linspace(start, stop, total_points)
 
         # Capture reference / background
@@ -543,6 +517,10 @@ class FMCWEngine:
         self._thread.start()
 
     def _validation_test_loop(self, test_type):
+        # Channel cal requires dual-channel mode
+        saved_mode = self.use_reference_channel
+        if test_type == 'channel_cal':
+            self.use_reference_channel = True
         try:
             print(f"[fmcw] Starting validation test: {test_type}")
             self._configure_hardware()
@@ -576,21 +554,24 @@ class FMCWEngine:
                 self._callback({'error': str(e)})
         finally:
             self._stop_tx_rx()
+            self.use_reference_channel = saved_mode
             self.running = False
 
     def _capture_single_sweep(self):
-        """Helper: perform one complete FMCW sweep and return de-chirped beat signals.
+        """Perform one complete FMCW sweep.
 
-        De-chirp is done by mixing RX1 (scene) against RX2 (cable reference from TX2).
-        This eliminates TX/RX buffer timing offset since both channels share the same
-        capture clock. RX2 raw phase is preserved separately for sub-band stitching.
+        Dual-channel mode: de-chirp via RX1*conj(RX2), timing offset cancels.
+        Single-channel mode: de-chirp via RX1*conj(chirp_ref), use overlap for stitching.
 
         Returns: (beat_signal, ref_phase, samples_per_chirp, num_sub)
-          - beat_signal: RX1 * conj(RX2) per sub-band, concatenated
-          - ref_phase: raw RX2 phase at each sub-band boundary (for stitching)
-          - samples_per_chirp: samples in one sub-band
-          - num_sub: number of sub-bands
         """
+        if self.use_reference_channel:
+            return self._capture_sweep_dual()
+        else:
+            return self._capture_sweep_single()
+
+    def _capture_sweep_dual(self):
+        """Dual-channel sweep: RX1*conj(RX2) de-chirp."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -628,7 +609,6 @@ class FMCWEngine:
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
             time.sleep(pll_settle)
 
-            # Discard buffers (1 mandatory + extra for PLL transient decay)
             for _ in range(1 + self.discard_buffers):
                 self._rx_event.clear()
                 self._rx_event.wait(timeout=1.0)
@@ -659,9 +639,7 @@ class FMCWEngine:
 
             idx_start = i * samples_per_chirp
             idx_end = idx_start + samples_per_chirp
-            # De-chirp: RX1 * conj(RX2) — timing offset cancels
             beat_signal[idx_start:idx_end] = sig_accum * np.conj(ref_accum)
-            # Store reference phase at sub-band midpoint for stitching
             ref_phase[i] = ref_accum[samples_per_chirp // 2]
 
             if self._callback and i % 5 == 0:
@@ -672,13 +650,131 @@ class FMCWEngine:
                     'freq_mhz': center / 1e6,
                 })
 
-        # Apply channel calibration if available (compensates differential filter response)
         if self._channel_cal is not None and len(self._channel_cal) == len(beat_signal):
             cal_mag = np.abs(self._channel_cal)
             valid = cal_mag > np.max(cal_mag) * 0.01
             beat_signal[valid] /= self._channel_cal[valid]
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
+
+    def _capture_sweep_single(self):
+        """Single-channel sweep with overlap correlation stitching.
+
+        De-chirps RX1 against locally-generated chirp. The timing offset between
+        TX buffer playback and RX capture is constant within a sub-band (chirp loops
+        continuously), producing a constant phase offset per sub-band. Adjacent
+        sub-bands overlap in frequency — the overlapping beat content correlates to
+        find the relative phase offset between hops.
+        """
+        with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            sub_bw = self.sub_band_bw
+            chirp_dur = self.chirp_duration
+            pll_settle = self.pll_settle_time
+            num_avg = self.num_chirps_avg
+            overlap = self.overlap_fraction
+
+        # Enforce minimum overlap for correlation
+        if overlap < 0.1:
+            overlap = 0.25
+
+        sub_step = int(sub_bw * (1.0 - overlap))
+        num_sub = int(np.ceil((stop - start) / sub_step))
+        samples_per_chirp = int(chirp_dur * self.driver.sample_rate)
+        overlap_samples = int(samples_per_chirp * overlap)
+
+        chirp_ref = self._generate_chirp_iq(samples_per_chirp)
+
+        # Store per-sub-band beat signals (full length each, before trimming)
+        beat_segments = []
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
+        freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
+        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+
+        for i in range(num_sub):
+            if self._stop_event.is_set():
+                return None, None, None, None
+
+            center = int(center_freqs[i])
+            g = int(rx_gains[i])
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, center)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, center)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
+            time.sleep(pll_settle)
+
+            for _ in range(1 + self.discard_buffers):
+                self._rx_event.clear()
+                self._rx_event.wait(timeout=1.0)
+
+            sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
+            captured = 0
+
+            for _ in range(num_avg):
+                self._rx_event.clear()
+                if not self._rx_event.wait(timeout=1.0):
+                    break
+                rx1, _ = self._rx_latest
+                if rx1 is None:
+                    continue
+                i1 = rx1[0::2].astype(np.float64) / 2047.0
+                q1 = rx1[1::2].astype(np.float64) / 2047.0
+                n_rx = min(len(i1), samples_per_chirp)
+                sig_accum[:n_rx] += (i1[:n_rx] + 1j * q1[:n_rx])
+                captured += 1
+
+            if captured > 0:
+                sig_accum /= captured
+
+            # De-chirp against local reference
+            beat = sig_accum * np.conj(chirp_ref)
+            beat_segments.append(beat)
+
+            if self._callback and i % 5 == 0:
+                self._callback({
+                    'type': 'progress',
+                    'step': i,
+                    'total': num_sub,
+                    'freq_mhz': center / 1e6,
+                })
+
+        # --- Overlap correlation stitching ---
+        # Each sub-band has a constant but unknown phase offset (from TX/RX timing).
+        # The overlap region between adjacent sub-bands covers the same frequencies,
+        # so their beat signals should match up to a phase/amplitude offset.
+        # Cross-correlate overlap regions to find and correct the offset.
+        stitched = beat_segments[0].copy()
+
+        for i in range(1, num_sub):
+            # Overlap region: end of previous sub-band overlaps with start of current
+            prev_overlap = beat_segments[i - 1][-overlap_samples:]
+            curr_overlap = beat_segments[i][:overlap_samples]
+
+            # Cross-correlation to find phase offset
+            # Both are de-chirped at the same frequencies, so the phase difference
+            # is purely the system offset between hops
+            corr = np.sum(curr_overlap * np.conj(prev_overlap))
+            if np.abs(corr) > 0:
+                phase_offset = np.exp(-1j * np.angle(corr))
+            else:
+                phase_offset = 1.0
+
+            # Apply correction and append non-overlapping portion
+            corrected = beat_segments[i] * phase_offset
+            stitched = np.concatenate([stitched, corrected[overlap_samples:]])
+
+        # Package into same format as dual-channel (for compatibility with callers)
+        total_samples = len(stitched)
+        # Effective samples_per_chirp for the stitched output
+        effective_spc = samples_per_chirp - overlap_samples
+        ref_phase = np.zeros(num_sub, dtype=np.complex128)
+
+        return stitched, ref_phase, effective_spc, num_sub
 
     def _test_linearity(self):
         """Test chirp linearity via cable-through.

@@ -45,6 +45,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       pll_settle_time_ms: overrides.pllSettleTime ?? fmcwParams.pllSettleTime,
       num_chirps_avg: overrides.numChirpsAvg ?? fmcwParams.numChirpsAvg,
       overlap_fraction: overrides.overlapFraction ?? fmcwParams.overlapFraction,
+      use_reference_channel: overrides.useReferenceChannel ?? fmcwParams.useReferenceChannel,
       tx1_gain: overrides.tx1Gain ?? fmcwParams.tx1Gain,
       rx1_gain: overrides.rx1Gain ?? fmcwParams.rx1Gain,
       range_offset: overrides.rangeOffset ?? fmcwParams.rangeOffset,
@@ -279,6 +280,24 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               min={0}
               max={0.5}
             />
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-[10px] text-[#777] flex-1">Stitching Mode</span>
+              <button
+                onClick={() => {
+                  const next = !fmcwParams?.useReferenceChannel;
+                  updateFmcw('useReferenceChannel', next);
+                  sendFmcwParams({ useReferenceChannel: next });
+                }}
+                className={cn(
+                  'px-2 py-1 rounded text-[9px] font-medium border transition-all',
+                  fmcwParams?.useReferenceChannel
+                    ? 'border-amber-400/40 bg-amber-400/10 text-amber-400'
+                    : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-400'
+                )}
+              >
+                {fmcwParams?.useReferenceChannel ? 'Ref Cable (4ch)' : 'Overlap (2ch)'}
+              </button>
+            </div>
             <EditableField
               label="Range Offset"
               value={fmcwParams?.rangeOffset ?? 0.55}

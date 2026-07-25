@@ -308,6 +308,8 @@ class SDRServer:
                     params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
+                if 'use_reference_channel' in cmd:
+                    params['use_reference_channel'] = bool(cmd['use_reference_channel'])
                 needs_restart = self.fmcw.running and any(
                     k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
                                           'start_freq', 'stop_freq', 'sub_band_bw')
@@ -349,6 +351,10 @@ class SDRServer:
 
             elif action == 'fmcw_clear_all':
                 self.fmcw.clear_all_subtraction()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_clear_channel_cal':
+                self.fmcw.clear_channel_cal()
                 await self._broadcast_sfcw_status()
 
             elif action == 'fmcw_get_status':

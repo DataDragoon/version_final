@@ -7,21 +7,19 @@ const TRACE_COLOR = '#A78BFA';
 const TRACE_COLOR_ALT = '#C4B5FD';
 
 export default function HwCalDisplay({ calResult, calMode }) {
+  // FMCW test results use a separate component (no canvas needed)
+  const isFmcwTest = calMode === 'fmcw_test' && calResult && calResult.type === 'fmcw_test_result';
+
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const latestResult = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
 
   useEffect(() => {
-    if (calResult) {
+    if (calResult && !isFmcwTest) {
       latestResult.current = calResult;
     }
-  }, [calResult]);
-
-  // FMCW test results display
-  if (calMode === 'fmcw_test' && calResult && calResult.type === 'fmcw_test_result') {
-    return <FmcwTestDisplay result={calResult} />;
-  }
+  }, [calResult, isFmcwTest]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -229,6 +227,10 @@ export default function HwCalDisplay({ calResult, calMode }) {
   };
 
   const handleMouseLeave = () => setCrosshair(null);
+
+  if (isFmcwTest) {
+    return <FmcwTestDisplay result={calResult} />;
+  }
 
   return (
     <div className="flex flex-col w-full h-full">

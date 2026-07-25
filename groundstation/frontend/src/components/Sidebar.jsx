@@ -66,6 +66,8 @@ export default function Sidebar({
   onSvdStrengthChange,
   hwCalStatus,
   onHwCalAction,
+  fmcwTestRunning,
+  fmcwTestProgress,
   sarBscanData,
   sarParams,
   onSarParamsChange,
@@ -253,6 +255,8 @@ export default function Sidebar({
                   sendSdr={sendSdr}
                   calStatus={hwCalStatus}
                   onCalAction={onHwCalAction}
+                  fmcwTestRunning={fmcwTestRunning}
+                  fmcwTestProgress={fmcwTestProgress}
                 />
               )}
               {activePanel === 'sar' && (

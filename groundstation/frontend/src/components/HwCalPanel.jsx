@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStatus, onCalAction }) {
+export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStatus, onCalAction, fmcwTestRunning, fmcwTestProgress }) {
   const canCapture = isConnected && sdrConnected;
 
   const perPos = calStatus.perPosition || { positions: [], stepSize: 5, numPositions: 20 };
@@ -184,33 +184,59 @@ export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStat
           title="Chirp Linearity"
           description="Measures residual phase after de-chirp on cable reference. Deviation from linear = filter distortion."
           metric="< 5° RMS = pass"
-          canRun={canCapture}
-          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'linearity' })}
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'linearity' })}
         />
 
         <FmcwTestCard
           title="Stitching Quality"
           description="Phase jumps at sub-band boundaries before/after correction. Checks for ghost peaks (PSLR)."
           metric="< 3° RMS jump, PSLR < -20 dB = pass"
-          canRun={canCapture}
-          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'stitching' })}
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'stitching' })}
         />
 
         <FmcwTestCard
           title="Repeatability"
           description="Back-to-back sweeps — measures correlation and residual difference. Low repeatability = stitching not correcting properly."
           metric="Correlation > 0.99, residual < -40 dB = pass"
-          canRun={canCapture}
-          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'repeatability' })}
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'repeatability' })}
         />
 
         <FmcwTestCard
           title="Phase Residual"
           description="Full-bandwidth phase linearity on cable. The most direct measure of synthetic bandwidth quality."
           metric="< 5° RMS residual = pass"
-          canRun={canCapture}
-          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'phase_residual' })}
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'phase_residual' })}
         />
+
+        {/* Progress indicator during FMCW test */}
+        {fmcwTestRunning && (
+          <div className="flex flex-col gap-2 p-3 rounded-xl border border-[#A78BFA]/30 bg-[#A78BFA]/5">
+            <div className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full border-2 border-[#A78BFA] border-t-transparent animate-spin" />
+              <span className="text-xs font-medium text-white/80">
+                {fmcwTestProgress
+                  ? `Sub-band ${fmcwTestProgress.step + 1}/${fmcwTestProgress.total}` + (fmcwTestProgress.freq_mhz ? ` — ${fmcwTestProgress.freq_mhz} MHz` : '')
+                  : 'Configuring hardware...'}
+              </span>
+            </div>
+            {fmcwTestProgress && fmcwTestProgress.step != null && fmcwTestProgress.total != null && (
+              <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
+                <div
+                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#A78BFA] to-[#C4B5FD] transition-all duration-300"
+                  style={{ width: `${(fmcwTestProgress.step / fmcwTestProgress.total) * 100}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </Section>
     </>
   );
@@ -277,7 +303,7 @@ function CalCard({ title, instructions, status, capturing, canCapture, onCapture
   );
 }
 
-function FmcwTestCard({ title, description, metric, canRun, onRun }) {
+function FmcwTestCard({ title, description, metric, canRun, running, onRun }) {
   return (
     <div className="flex flex-col gap-2 p-3 rounded-xl border border-white/5 bg-[#0a0a0a]/40 mb-2">
       <span className="text-xs font-semibold text-white">{title}</span>
@@ -299,9 +325,13 @@ function FmcwTestCard({ title, description, metric, canRun, onRun }) {
           'flex items-center justify-center w-6 h-6 rounded-lg shrink-0 transition-all duration-500',
           canRun ? 'bg-[#A78BFA]/15' : 'bg-white/5',
         )}>
-          <div className="w-2 h-2 rounded-full border-2 border-current text-[#A78BFA]" />
+          {running ? (
+            <div className="w-2.5 h-2.5 rounded-full border-2 border-[#A78BFA] border-t-transparent animate-spin" />
+          ) : (
+            <div className="w-2 h-2 rounded-full border-2 border-current text-[#A78BFA]" />
+          )}
         </div>
-        <span className="text-xs font-medium text-white/70">Run Test</span>
+        <span className="text-xs font-medium text-white/70">{running ? 'Running...' : 'Run Test'}</span>
       </button>
     </div>
   );

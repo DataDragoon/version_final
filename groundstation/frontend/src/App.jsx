@@ -152,6 +152,9 @@ export default function App() {
   const [hwCalResult, setHwCalResult] = useState(null);
   const [hwCalMode, setHwCalMode] = useState(null);
   const hwCalPendingRef = useRef(null);
+  const [fmcwTestRunning, setFmcwTestRunning] = useState(false);
+  const [fmcwTestProgress, setFmcwTestProgress] = useState(null);
+  const fmcwTestRunningRef = useRef(false);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -201,9 +204,11 @@ export default function App() {
         setBscanBgCaptured(msg.background_active);
       }
     } else if (msg.type === 'fmcw_test_result') {
-      // Route to hw calibration display
       setHwCalResult(msg);
       setHwCalMode('fmcw_test');
+      setFmcwTestRunning(false);
+      fmcwTestRunningRef.current = false;
+      setFmcwTestProgress(null);
     } else if (msg.type === 'sfcw_result') {
       if (bscanPendingRef.current === 'capture') {
         const posData = { magnitudes: [...msg.magnitudes], distances: [...msg.distances] };
@@ -245,6 +250,9 @@ export default function App() {
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
       setSfcwProgress(msg);
+      if (fmcwTestRunningRef.current) {
+        setFmcwTestProgress(msg);
+      }
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
@@ -394,6 +402,11 @@ export default function App() {
         ...prev,
         perPosition: { ...prev.perPosition, numPositions: params.numPositions },
       }));
+    } else if (action === 'fmcw_test') {
+      setFmcwTestRunning(true);
+      fmcwTestRunningRef.current = true;
+      setFmcwTestProgress(null);
+      sendSdr({ cmd: 'fmcw_test', test_type: params.test_type });
     }
   }, [sendSdr]);
 
@@ -545,6 +558,8 @@ export default function App() {
         onSvdStrengthChange={setSvdStrength}
         hwCalStatus={hwCalStatus}
         onHwCalAction={handleHwCalAction}
+        fmcwTestRunning={fmcwTestRunning}
+        fmcwTestProgress={fmcwTestProgress}
         sarBscanData={bscanData}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}

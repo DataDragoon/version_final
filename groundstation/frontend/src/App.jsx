@@ -195,7 +195,7 @@ export default function App() {
     } else if (msg.type === 'sweep_mode') {
       setSweepMode(msg.mode);
     } else if (msg.type === 'fmcw_status') {
-      // Update sfcwStatus with fmcw info so the panel can read fmcw_running
+      setSfcwRunning(msg.running);
       setSfcwStatus(prev => ({ ...prev, fmcw_running: msg.running, sweep_mode: msg.sweep_mode }));
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);

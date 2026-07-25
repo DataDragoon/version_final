@@ -281,28 +281,29 @@ class FMCWEngine:
             self._stop_tx_rx()
             self.running = False
 
+    @staticmethod
+    def _pick_sample_rate(sub_band_bw, max_rate):
+        """Pick sample rate. Currently locked to 30.72 MSPS — the only rate
+        validated for phase-coherent FMCW on this hardware.
+        """
+        return 30_720_000
+
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
-
-        required_rate = 30_720_000  # Fixed to AD9361 native rate (exact clock divider)
 
         if self.use_reference_channel:
             # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel
             self.driver.tx2_gain = self.tx2_gain
             self.driver.rx2_gain = self.rx2_gain
-            max_rate = 30_720_000
-            fmcw_rate = min(required_rate, max_rate)
-            fmcw_rate = max(fmcw_rate, 4_000_000)
+            fmcw_rate = self._pick_sample_rate(self.sub_band_bw, 30_720_000)
             self.driver.sample_rate = fmcw_rate
             self.driver.bandwidth = int(fmcw_rate * 0.8)
             self.driver._configure_channels_dual()
             mode_str = "dual-channel (reference)"
         else:
-            # Single-channel: TX1+RX1 only — cap at 40 MSPS (80 MSPS total USB limit)
-            max_rate = 40_000_000
-            fmcw_rate = min(required_rate, max_rate)
-            fmcw_rate = max(fmcw_rate, 4_000_000)
+            # Single-channel: TX1+RX1 only — 40 MSPS USB limit
+            fmcw_rate = self._pick_sample_rate(self.sub_band_bw, 40_000_000)
             self.driver.sample_rate = fmcw_rate
             self.driver.bandwidth = int(fmcw_rate * 0.8)
             self._configure_single_channel()
@@ -318,15 +319,21 @@ class FMCWEngine:
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
         libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, int(self.driver.center_freq))
-        libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.driver.sample_rate), ffi.NULL)
-        libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, int(self.driver.bandwidth), ffi.NULL)
         libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, int(self.driver.center_freq))
-        libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(self.driver.sample_rate), ffi.NULL)
+        # Read back actual sample rate — hardware may quantize the requested value
+        actual_rate = ffi.new("unsigned int *")
+        libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.driver.sample_rate), actual_rate)
+        libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(actual_rate[0]), ffi.NULL)
+        if actual_rate[0] != int(self.driver.sample_rate):
+            print(f"[bladerf] Rate quantized: requested {self.driver.sample_rate}, got {actual_rate[0]}")
+        self.driver.sample_rate = int(actual_rate[0])
+        self._fmcw_sample_rate = int(actual_rate[0])
+        libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, int(self.driver.bandwidth), ffi.NULL)
         libbladeRF.bladerf_set_bandwidth(dev_ptr, rx_ch, int(self.driver.bandwidth), ffi.NULL)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch, libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, int(self.rx1_gain))
         libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, int(self.tx1_gain))
-        print(f"[bladerf] Single-channel configured: TX1={self.tx1_gain}dB RX1={self.rx1_gain}dB")
+        print(f"[bladerf] Single-channel configured: {self.driver.sample_rate/1e6:.4f} MSPS TX1={self.tx1_gain}dB RX1={self.rx1_gain}dB")
 
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
@@ -660,6 +667,25 @@ class FMCWEngine:
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
+    def _find_chirp_wrap(self, rx_iq, chirp_ref, samples_per_chirp):
+        """Find chirp alignment via cross-correlation with reference.
+
+        Cross-correlates the RX capture with the known chirp waveform.
+        The correlation peak indicates where a chirp period begins.
+        Robust to DC offset, low SNR, and analog filter effects.
+        """
+        rx = rx_iq - np.mean(rx_iq)
+        n_rx = len(rx)
+        rx_fft = np.fft.fft(rx, n=n_rx)
+        ref_fft = np.fft.fft(chirp_ref, n=n_rx)
+        corr = np.abs(np.fft.ifft(rx_fft * np.conj(ref_fft)))
+        search_start = samples_per_chirp // 10
+        search_end = n_rx - samples_per_chirp
+        if search_end <= search_start:
+            return 0
+        region = corr[search_start:search_end]
+        return search_start + int(np.argmax(region))
+
     def _best_alignment(self, rx_iq, chirp_ref, samples_per_chirp):
         """Find the best chirp alignment by trying multiple offsets.
 
@@ -758,9 +784,10 @@ class FMCWEngine:
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 rx_iq = i1 + 1j * q1
 
-                # Find best alignment by trying multiple offsets
-                beat = self._best_alignment(rx_iq, chirp_ref, samples_per_chirp)
-                if beat is not None:
+                wrap_idx = self._find_chirp_wrap(rx_iq, chirp_ref, samples_per_chirp)
+                if wrap_idx + samples_per_chirp <= len(rx_iq):
+                    segment = rx_iq[wrap_idx:wrap_idx + samples_per_chirp]
+                    beat = segment * np.conj(chirp_ref)
                     beats.append(beat)
 
             if len(beats) == 0:

@@ -659,37 +659,40 @@ class FMCWEngine:
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
-    def _align_to_chirp(self, rx_iq, chirp_ref):
-        """Find chirp boundary in received signal using cross-correlation.
+    def _dechirp_aligned(self, rx_iq, chirp_ref):
+        """De-chirp and extract a clean segment avoiding the chirp wrap point.
 
-        TX loops the chirp continuously; RX capture starts at an arbitrary offset.
-        We capture 2× chirp length and correlate to find where the chirp starts.
-        Returns one aligned chirp period.
+        TX loops the chirp continuously; RX capture (2× chirp length) starts at an
+        arbitrary offset. De-chirping a looping chirp against the reference produces a
+        beat tone with a phase discontinuity wherever the chirp restarts. We find that
+        discontinuity and extract one chirp period of clean beat signal.
         """
         samples_per_chirp = len(chirp_ref)
         n_rx = len(rx_iq)
 
         if n_rx < samples_per_chirp:
-            return rx_iq
+            beat = rx_iq * np.conj(chirp_ref[:n_rx])
+            return beat
 
-        # Correlate the RX signal with the chirp reference to find the start
-        # Use FFT-based correlation for speed
-        # We only need to search the first chirp_length offsets
-        search_len = min(n_rx - samples_per_chirp, samples_per_chirp)
+        # De-chirp the full 2× capture by tiling the reference
+        ref_tiled = np.tile(chirp_ref, (n_rx // samples_per_chirp) + 1)[:n_rx]
+        beat_full = rx_iq * np.conj(ref_tiled)
 
-        # Compute correlation magnitude at each offset using sliding dot product
-        # For efficiency, use the frequency domain
-        padded_len = n_rx
-        rx_fft = np.fft.fft(rx_iq, padded_len)
-        ref_fft = np.fft.fft(np.conj(chirp_ref[::-1]), padded_len)
-        corr = np.fft.ifft(rx_fft * ref_fft)
+        # The beat signal is a clean tone everywhere EXCEPT at chirp wrap points
+        # (every samples_per_chirp samples offset by the unknown capture offset).
+        # Find the wrap: largest instantaneous phase jump in the first chirp+margin.
+        search_end = min(n_rx - samples_per_chirp, int(samples_per_chirp * 1.2))
+        phase_diff = np.abs(np.diff(np.angle(beat_full[:search_end])))
+        wrap_idx = int(np.argmax(phase_diff)) + 1
 
-        # Peak in correlation = start of aligned chirp
-        # Only search within valid range
-        corr_mag = np.abs(corr[:search_len])
-        offset = int(np.argmax(corr_mag))
+        # Extract one clean chirp period starting just after the wrap
+        start = wrap_idx
+        end = start + samples_per_chirp
+        if end <= n_rx:
+            return beat_full[start:end]
 
-        return rx_iq[offset:offset + samples_per_chirp]
+        # Fallback: wrap went too late, take from beginning
+        return beat_full[:samples_per_chirp]
 
     def _capture_sweep_single(self):
         """Single-channel sweep with overlap correlation stitching.
@@ -744,7 +747,7 @@ class FMCWEngine:
                 self._rx_event.clear()
                 self._rx_event.wait(timeout=1.0)
 
-            sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
+            beat_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
             captured = 0
 
             for _ in range(num_avg):
@@ -758,18 +761,16 @@ class FMCWEngine:
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 rx_iq = i1 + 1j * q1
 
-                # Align to chirp boundary before accumulating
-                aligned = self._align_to_chirp(rx_iq, chirp_ref)
-                n_aligned = min(len(aligned), samples_per_chirp)
-                sig_accum[:n_aligned] += aligned[:n_aligned]
+                # De-chirp and extract clean segment avoiding the wrap
+                beat = self._dechirp_aligned(rx_iq, chirp_ref)
+                n_beat = min(len(beat), samples_per_chirp)
+                beat_accum[:n_beat] += beat[:n_beat]
                 captured += 1
 
             if captured > 0:
-                sig_accum /= captured
+                beat_accum /= captured
 
-            # De-chirp against local reference (now aligned)
-            beat = sig_accum * np.conj(chirp_ref)
-            beat_segments.append(beat)
+            beat_segments.append(beat_accum)
 
             if self._callback and i % 5 == 0:
                 self._callback({

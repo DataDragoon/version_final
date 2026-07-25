@@ -351,8 +351,10 @@ class FMCWEngine:
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
         else:
+            # Capture 2× chirp length so we can align to chirp boundary
+            rx_samples = self._chirp_samples * 2
             self.driver.start_tx()
-            self.driver.start_rx(self._rx_capture_single, num_samples=self._chirp_samples)
+            self.driver.start_rx(self._rx_capture_single, num_samples=rx_samples)
             time.sleep(0.05)
             dev_ptr = self.driver.device.dev[0]
             libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
@@ -657,14 +659,45 @@ class FMCWEngine:
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
+    def _align_to_chirp(self, rx_iq, chirp_ref):
+        """Find chirp boundary in received signal using cross-correlation.
+
+        TX loops the chirp continuously; RX capture starts at an arbitrary offset.
+        We capture 2× chirp length and correlate to find where the chirp starts.
+        Returns one aligned chirp period.
+        """
+        samples_per_chirp = len(chirp_ref)
+        n_rx = len(rx_iq)
+
+        if n_rx < samples_per_chirp:
+            return rx_iq
+
+        # Correlate the RX signal with the chirp reference to find the start
+        # Use FFT-based correlation for speed
+        # We only need to search the first chirp_length offsets
+        search_len = min(n_rx - samples_per_chirp, samples_per_chirp)
+
+        # Compute correlation magnitude at each offset using sliding dot product
+        # For efficiency, use the frequency domain
+        padded_len = n_rx
+        rx_fft = np.fft.fft(rx_iq, padded_len)
+        ref_fft = np.fft.fft(np.conj(chirp_ref[::-1]), padded_len)
+        corr = np.fft.ifft(rx_fft * ref_fft)
+
+        # Peak in correlation = start of aligned chirp
+        # Only search within valid range
+        corr_mag = np.abs(corr[:search_len])
+        offset = int(np.argmax(corr_mag))
+
+        return rx_iq[offset:offset + samples_per_chirp]
+
     def _capture_sweep_single(self):
         """Single-channel sweep with overlap correlation stitching.
 
-        De-chirps RX1 against locally-generated chirp. The timing offset between
-        TX buffer playback and RX capture is constant within a sub-band (chirp loops
-        continuously), producing a constant phase offset per sub-band. Adjacent
-        sub-bands overlap in frequency — the overlapping beat content correlates to
-        find the relative phase offset between hops.
+        De-chirps RX1 against locally-generated chirp. TX loops chirp continuously;
+        we capture 2× chirp duration and cross-correlate to find alignment before
+        de-chirping. Adjacent sub-bands overlap in frequency — the overlapping beat
+        content correlates to find the relative phase offset between hops.
         """
         with self._lock:
             start = self.start_freq
@@ -686,7 +719,6 @@ class FMCWEngine:
 
         chirp_ref = self._generate_chirp_iq(samples_per_chirp)
 
-        # Store per-sub-band beat signals (full length each, before trimming)
         beat_segments = []
 
         dev_ptr = self.driver.device.dev[0]
@@ -724,14 +756,18 @@ class FMCWEngine:
                     continue
                 i1 = rx1[0::2].astype(np.float64) / 2047.0
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
-                n_rx = min(len(i1), samples_per_chirp)
-                sig_accum[:n_rx] += (i1[:n_rx] + 1j * q1[:n_rx])
+                rx_iq = i1 + 1j * q1
+
+                # Align to chirp boundary before accumulating
+                aligned = self._align_to_chirp(rx_iq, chirp_ref)
+                n_aligned = min(len(aligned), samples_per_chirp)
+                sig_accum[:n_aligned] += aligned[:n_aligned]
                 captured += 1
 
             if captured > 0:
                 sig_accum /= captured
 
-            # De-chirp against local reference
+            # De-chirp against local reference (now aligned)
             beat = sig_accum * np.conj(chirp_ref)
             beat_segments.append(beat)
 
@@ -744,37 +780,31 @@ class FMCWEngine:
                 })
 
         # --- Overlap correlation stitching ---
-        # Each sub-band has a constant but unknown phase offset (from TX/RX timing).
+        # Each sub-band still has a constant phase offset (PLL lands at random phase).
         # The overlap region between adjacent sub-bands covers the same frequencies,
-        # so their beat signals should match up to a phase/amplitude offset.
-        # Cross-correlate overlap regions to find and correct the offset.
-        stitched = beat_segments[0].copy()
+        # so their beat signals should match up to a phase offset.
+        # Output: non-overlapping portion of each sub-band, uniformly spaced.
+        non_overlap = samples_per_chirp - overlap_samples
 
+        # Phase-correct all segments relative to segment 0
         for i in range(1, num_sub):
-            # Overlap region: end of previous sub-band overlaps with start of current
             prev_overlap = beat_segments[i - 1][-overlap_samples:]
             curr_overlap = beat_segments[i][:overlap_samples]
 
-            # Cross-correlation to find phase offset
-            # Both are de-chirped at the same frequencies, so the phase difference
-            # is purely the system offset between hops
             corr = np.sum(curr_overlap * np.conj(prev_overlap))
             if np.abs(corr) > 0:
                 phase_offset = np.exp(-1j * np.angle(corr))
             else:
                 phase_offset = 1.0
 
-            # Apply correction and append non-overlapping portion
-            corrected = beat_segments[i] * phase_offset
-            stitched = np.concatenate([stitched, corrected[overlap_samples:]])
+            beat_segments[i] = beat_segments[i] * phase_offset
 
-        # Package into same format as dual-channel (for compatibility with callers)
-        total_samples = len(stitched)
-        # Effective samples_per_chirp for the stitched output
-        effective_spc = samples_per_chirp - overlap_samples
+        # Concatenate non-overlapping portions (uniform spc for all sub-bands)
+        stitched = np.concatenate([seg[:non_overlap] for seg in beat_segments])
+
         ref_phase = np.zeros(num_sub, dtype=np.complex128)
 
-        return stitched, ref_phase, effective_spc, num_sub
+        return stitched, ref_phase, non_overlap, num_sub
 
     def _test_linearity(self):
         """Test chirp linearity via cable-through.

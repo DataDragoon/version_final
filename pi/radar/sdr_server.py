@@ -37,7 +37,7 @@ class SDRServer:
         self.sfcw = SFCWEngine(self.driver)
         self.fmcw = FMCWEngine(self.driver)
         self.fmcw.load_channel_cal()
-        self.sweep_mode = 'sfcw'  # 'sfcw' or 'fmcw'
+        self.sweep_mode = 'fmcw'  # 'sfcw' or 'fmcw'
         self.clients = set()
         self.rx_queue = asyncio.Queue(maxsize=4)
         self.sfcw_queue = asyncio.Queue(maxsize=8)

@@ -468,9 +468,8 @@ class FMCWEngine:
         max_range = SPEED_OF_LIGHT / (2 * (total_bw / total_points))
         distances = np.linspace(0, max_range, total_points) - self.range_offset
 
-        # Trim to useful display range (same as SFCW: c/(2*freq_step) where
-        # freq_step = total_bw / num_display_points). Use ~15m max.
-        display_max = SPEED_OF_LIGHT / (2 * total_bw) * 500  # ~500 SFCW-equivalent steps
+        # Hard cap at 10m for through-wall imaging — discard beyond that
+        display_max = 10.0
         display_bins = int(display_max / max_range * total_points)
         display_bins = min(display_bins, total_points // 2)
         magnitude_db = magnitude_db[:display_bins]

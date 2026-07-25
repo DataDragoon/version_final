@@ -38,7 +38,7 @@ export default function App() {
   const [sfcwProgress, setSfcwProgress] = useState(null);
 
   // Sweep mode (sfcw or fmcw)
-  const [sweepMode, setSweepMode] = useState('sfcw');
+  const [sweepMode, setSweepMode] = useState('fmcw');
 
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
@@ -593,6 +593,8 @@ export default function App() {
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
         sfcwParams={sfcwParams}
+        fmcwParams={fmcwParams}
+        sweepMode={sweepMode}
         hwCalResult={hwCalResult}
         hwCalMode={hwCalMode}
         sarResult={sarResult}

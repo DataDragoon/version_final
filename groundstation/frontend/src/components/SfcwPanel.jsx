@@ -73,17 +73,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       <Section label="Sweep Mode">
         <div className="grid grid-cols-2 gap-1">
           <button
-            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'sfcw' })}
-            className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              !isFmcw
-                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
-                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
-            )}
-          >
-            SFCW
-          </button>
-          <button
             onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'fmcw' })}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
@@ -93,6 +82,17 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             )}
           >
             FMCW
+          </button>
+          <button
+            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'sfcw' })}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !isFmcw
+                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
+                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
+            )}
+          >
+            SFCW
           </button>
         </div>
       </Section>

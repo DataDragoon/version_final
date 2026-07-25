@@ -285,7 +285,7 @@ class FMCWEngine:
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
 
-        required_rate = int(self.sub_band_bw * 1.5)  # 50% margin over chirp BW for clean filter passband
+        required_rate = int(self.sub_band_bw * 1.25)  # 25% margin over chirp BW
 
         if self.use_reference_channel:
             # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel
@@ -351,8 +351,9 @@ class FMCWEngine:
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
             libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
         else:
-            # Capture 3× chirp length so we can reliably find chirp boundary
+            # Capture 3× chirp length, rounded up to multiple of 1024 for DMA alignment
             rx_samples = self._chirp_samples * 3
+            rx_samples = ((rx_samples + 1023) // 1024) * 1024
             self.driver.start_tx()
             self.driver.start_rx(self._rx_capture_single, num_samples=rx_samples)
             time.sleep(0.05)
@@ -664,44 +665,31 @@ class FMCWEngine:
 
         The TX chirp loops, sweeping from -BW/2 to +BW/2 then wrapping back.
         This creates a large negative spike in the frequency acceleration (2nd
-        derivative of phase). We smooth the signal first to reduce noise sensitivity.
+        derivative of phase).
 
         Returns the sample index right after the wrap (start of a new chirp cycle).
         """
         n_rx = len(rx_iq)
 
-        # Smooth signal to reduce phase noise (moving average, window ~16 samples)
-        kernel_size = min(16, samples_per_chirp // 32)
-        if kernel_size > 1:
-            kernel = np.ones(kernel_size) / kernel_size
-            rx_smooth = np.convolve(rx_iq, kernel, mode='valid')
-        else:
-            rx_smooth = rx_iq
-
-        # Compute instantaneous frequency (phase derivative)
-        phase = np.unwrap(np.angle(rx_smooth))
+        phase = np.unwrap(np.angle(rx_iq))
         inst_freq = np.diff(phase)
-
-        # Second derivative: ~constant during linear chirp sweep, large negative at wrap
         freq_accel = np.diff(inst_freq)
 
-        # Skip early samples for unwrap warmup, ensure room for extraction after
-        search_start = max(kernel_size + 10, samples_per_chirp // 10)
-        search_end = min(len(freq_accel), n_rx - samples_per_chirp - kernel_size)
+        # Skip early samples, ensure room for extraction after
+        search_start = max(10, samples_per_chirp // 10)
+        search_end = min(len(freq_accel), n_rx - samples_per_chirp - 2)
         if search_end <= search_start:
             return 0
 
         region = freq_accel[search_start:search_end]
-
-        # The wrap spike is approximately -2π × BW / sample_rate (e.g. -4 to -5 rad)
-        # Normal chirp acceleration is near zero. Threshold at -1.0 rad.
         min_idx = int(np.argmin(region))
         spike_val = region[min_idx]
 
-        if spike_val > -1.0:
+        # Spike is approximately -2π × BW / sample_rate (e.g. -4 to -5 rad)
+        if spike_val > -0.5:
             return 0
 
-        wrap_idx = search_start + min_idx + 2 + kernel_size // 2
+        wrap_idx = search_start + min_idx + 2
         return wrap_idx
 
     def _capture_sweep_single(self):

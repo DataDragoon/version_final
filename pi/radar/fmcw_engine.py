@@ -39,7 +39,7 @@ class FMCWEngine:
         self.sub_band_bw = 20_000_000       # 20 MHz per chirp (safe for MIMO 30.72 MSPS)
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
-        self.num_chirps_avg = 4             # chirps to average per sub-band
+        self.num_chirps_avg = 8             # chirps to average per sub-band
         self.overlap_fraction = 0.25        # 25% overlap for correlation stitching
         # Reference channel mode: False = single-channel with overlap stitching (default)
         self.use_reference_channel = False

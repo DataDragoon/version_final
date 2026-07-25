@@ -41,8 +41,8 @@ class FMCWEngine:
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 8             # chirps to average per sub-band
         self.overlap_fraction = 0.25        # 25% overlap for correlation stitching
-        # Reference channel mode: False = single-channel with overlap stitching (default)
-        self.use_reference_channel = False
+        # Reference channel mode: True = dual-channel with TX2→RX2 cable reference (default)
+        self.use_reference_channel = True
         # Gain parameters
         self.tx1_gain = 30
         self.rx1_gain = 30

@@ -63,7 +63,7 @@ export default function App() {
     pllSettleTime: 2,
     numChirpsAvg: 8,
     overlapFraction: 0.25,
-    useReferenceChannel: false,
+    useReferenceChannel: true,
     tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.55,

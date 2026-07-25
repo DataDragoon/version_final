@@ -664,16 +664,23 @@ class FMCWEngine:
         """Find the chirp wrap point in raw RX signal.
 
         The TX chirp loops, sweeping from -BW/2 to +BW/2 then wrapping back.
-        This creates a large negative spike in the frequency acceleration (2nd
-        derivative of phase).
+        At the wrap, the instantaneous frequency drops by BW in one sample.
+        We detect this via the product rx[n]*conj(rx[n-1]) which gives the
+        instantaneous frequency without needing phase unwrap.
 
         Returns the sample index right after the wrap (start of a new chirp cycle).
         """
         n_rx = len(rx_iq)
 
-        phase = np.unwrap(np.angle(rx_iq))
-        inst_freq = np.diff(phase)
-        freq_accel = np.diff(inst_freq)
+        # Instantaneous frequency via angle of rx[n]*conj(rx[n-1])
+        # This is inherently wrapped to [-π, π] and doesn't need unwrap
+        product = rx_iq[1:] * np.conj(rx_iq[:-1])
+        inst_freq = np.angle(product)
+
+        # Frequency acceleration: diff of inst_freq, wrapped to [-π, π]
+        freq_diff = np.diff(inst_freq)
+        # Wrap to [-π, π] to handle ±π crossings cleanly
+        freq_accel = (freq_diff + np.pi) % (2 * np.pi) - np.pi
 
         # Skip early samples, ensure room for extraction after
         search_start = max(10, samples_per_chirp // 10)
@@ -685,11 +692,21 @@ class FMCWEngine:
         min_idx = int(np.argmin(region))
         spike_val = region[min_idx]
 
-        # Spike is approximately -2π × BW / sample_rate (e.g. -4 to -5 rad)
-        if spike_val > -0.5:
+        # The wrap spike is -2π × BW / sample_rate, wrapped to [-π, π]
+        # For 25 MHz / 37.5 MSPS: raw spike = -4.19, wrapped = -4.19 + 2π = +2.09
+        # For 20 MHz / 30 MSPS: raw spike = -4.19, wrapped = -4.19 + 2π = +2.09
+        # So the spike might appear as a POSITIVE value after wrapping!
+        # Instead look for the largest absolute deviation from the median
+        median_accel = np.median(region)
+        deviation = np.abs(region - median_accel)
+        max_dev_idx = int(np.argmax(deviation))
+        max_dev = deviation[max_dev_idx]
+
+        # Normal acceleration variation is small; the wrap is a huge outlier
+        if max_dev < 0.5:
             return 0
 
-        wrap_idx = search_start + min_idx + 2
+        wrap_idx = search_start + max_dev_idx + 2
         return wrap_idx
 
     def _capture_sweep_single(self):

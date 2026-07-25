@@ -18,6 +18,19 @@ FFT_SIZE = 16384
 VIS_SAMPLES = 512
 
 
+def _json_default(obj):
+    """Handle numpy types in JSON serialization."""
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
 class SDRServer:
     def __init__(self):
         self.driver = BladeRFDriver()
@@ -497,7 +510,7 @@ class SDRServer:
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
                 msg = json.dumps(data)
             elif isinstance(data, dict) and data.get('type') == 'fmcw_test_result':
-                msg = json.dumps(data)
+                msg = json.dumps(data, default=_json_default)
             elif isinstance(data, dict) and data.get('type') == 'fmcw_status':
                 msg = json.dumps(data)
             else:

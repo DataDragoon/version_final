@@ -285,7 +285,7 @@ class FMCWEngine:
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
 
-        required_rate = int(self.sub_band_bw * 1.25)  # 25% margin over chirp BW
+        required_rate = int(self.sub_band_bw * 1.5)  # 50% margin over chirp BW
 
         if self.use_reference_channel:
             # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel

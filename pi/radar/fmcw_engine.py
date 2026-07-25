@@ -285,7 +285,7 @@ class FMCWEngine:
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
 
-        required_rate = int(self.sub_band_bw * 1.5)  # 50% margin over chirp BW
+        required_rate = 30_720_000  # Fixed to AD9361 native rate (exact clock divider)
 
         if self.use_reference_channel:
             # Dual-channel: TX1+TX2, RX1+RX2 — limited to 30.72 MSPS per channel
@@ -660,54 +660,37 @@ class FMCWEngine:
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
-    def _find_chirp_wrap(self, rx_iq, samples_per_chirp):
-        """Find the chirp wrap point in raw RX signal.
+    def _best_alignment(self, rx_iq, chirp_ref, samples_per_chirp):
+        """Find the best chirp alignment by trying multiple offsets.
 
-        The TX chirp loops, sweeping from -BW/2 to +BW/2 then wrapping back.
-        At the wrap, the instantaneous frequency drops by BW in one sample.
-        We detect this via the product rx[n]*conj(rx[n-1]) which gives the
-        instantaneous frequency without needing phase unwrap.
+        De-chirps at several candidate offsets (spaced by samples_per_chirp)
+        and picks the one with the flattest phase (lowest residual beat frequency),
+        meaning it aligned closest to a chirp boundary.
 
-        Returns the sample index right after the wrap (start of a new chirp cycle).
+        Returns the de-chirped beat signal at the best alignment.
         """
         n_rx = len(rx_iq)
+        best_beat = None
+        best_score = float('inf')
 
-        # Instantaneous frequency via angle of rx[n]*conj(rx[n-1])
-        # This is inherently wrapped to [-π, π] and doesn't need unwrap
-        product = rx_iq[1:] * np.conj(rx_iq[:-1])
-        inst_freq = np.angle(product)
+        # Try every possible full-chirp extraction window
+        # With 3× capture, there are ~2 full periods we can start from
+        for offset in range(0, n_rx - samples_per_chirp + 1, samples_per_chirp // 4):
+            segment = rx_iq[offset:offset + samples_per_chirp]
+            beat = segment * np.conj(chirp_ref)
 
-        # Frequency acceleration: diff of inst_freq, wrapped to [-π, π]
-        freq_diff = np.diff(inst_freq)
-        # Wrap to [-π, π] to handle ±π crossings cleanly
-        freq_accel = (freq_diff + np.pi) % (2 * np.pi) - np.pi
+            # Score: fit linear phase and measure the beat frequency
+            # Best alignment → lowest beat frequency (just cable delay ~200 Hz)
+            # Misaligned → beat = sweep_rate × misalignment → large
+            phase = np.unwrap(np.angle(beat))
+            slope = (phase[-1] - phase[0]) / len(phase)
+            score = abs(slope)
 
-        # Skip early samples, ensure room for extraction after
-        search_start = max(10, samples_per_chirp // 10)
-        search_end = min(len(freq_accel), n_rx - samples_per_chirp - 2)
-        if search_end <= search_start:
-            return 0
+            if score < best_score:
+                best_score = score
+                best_beat = beat
 
-        region = freq_accel[search_start:search_end]
-        min_idx = int(np.argmin(region))
-        spike_val = region[min_idx]
-
-        # The wrap spike is -2π × BW / sample_rate, wrapped to [-π, π]
-        # For 25 MHz / 37.5 MSPS: raw spike = -4.19, wrapped = -4.19 + 2π = +2.09
-        # For 20 MHz / 30 MSPS: raw spike = -4.19, wrapped = -4.19 + 2π = +2.09
-        # So the spike might appear as a POSITIVE value after wrapping!
-        # Instead look for the largest absolute deviation from the median
-        median_accel = np.median(region)
-        deviation = np.abs(region - median_accel)
-        max_dev_idx = int(np.argmax(deviation))
-        max_dev = deviation[max_dev_idx]
-
-        # Normal acceleration variation is small; the wrap is a huge outlier
-        if max_dev < 0.5:
-            return 0
-
-        wrap_idx = search_start + max_dev_idx + 2
-        return wrap_idx
+        return best_beat
 
     def _capture_sweep_single(self):
         """Single-channel sweep with overlap correlation stitching.
@@ -775,17 +758,10 @@ class FMCWEngine:
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 rx_iq = i1 + 1j * q1
 
-                # Find chirp wrap in raw signal and extract one aligned period
-                wrap_idx = self._find_chirp_wrap(rx_iq, samples_per_chirp)
-                end_idx = wrap_idx + samples_per_chirp
-                if end_idx <= len(rx_iq):
-                    aligned = rx_iq[wrap_idx:end_idx]
-                else:
-                    aligned = rx_iq[:samples_per_chirp]
-
-                # De-chirp against aligned reference
-                beat = aligned * np.conj(chirp_ref)
-                beats.append(beat)
+                # Find best alignment by trying multiple offsets
+                beat = self._best_alignment(rx_iq, chirp_ref, samples_per_chirp)
+                if beat is not None:
+                    beats.append(beat)
 
             if len(beats) == 0:
                 beat_segments.append(np.zeros(samples_per_chirp, dtype=np.complex128))
@@ -795,9 +771,7 @@ class FMCWEngine:
                 # Robust averaging: discard outliers by correlation with median
                 beats_arr = np.array(beats)
                 median_beat = np.median(beats_arr.real, axis=0) + 1j * np.median(beats_arr.imag, axis=0)
-                # Score each capture by correlation with median
                 scores = np.array([np.abs(np.vdot(b, median_beat)) for b in beats])
-                # Keep captures above 50% of best score
                 threshold = 0.5 * np.max(scores)
                 good = beats_arr[scores >= threshold]
                 beat_segments.append(np.mean(good, axis=0))

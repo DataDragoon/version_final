@@ -238,11 +238,11 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             <div className="grid grid-cols-2 gap-2">
               <EditableField
                 label="Sub-band BW"
-                value={fmcwParams?.subBandBw ?? 56}
+                value={fmcwParams?.subBandBw ?? 20}
                 unit="MHz"
                 onChange={(v) => { updateFmcw('subBandBw', v); sendFmcwParams({ subBandBw: v }); }}
                 min={1}
-                max={56}
+                max={24}
               />
               <EditableField
                 label="Chirp Dur"

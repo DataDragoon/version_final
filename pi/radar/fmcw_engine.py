@@ -36,7 +36,7 @@ class FMCWEngine:
         self.start_freq = 1_000_000_000
         self.stop_freq = 6_000_000_000
         # FMCW-specific parameters
-        self.sub_band_bw = 56_000_000       # 56 MHz per chirp (bladeRF max)
+        self.sub_band_bw = 20_000_000       # 20 MHz per chirp (safe for MIMO 30.72 MSPS)
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 4             # chirps to average per sub-band
@@ -246,6 +246,21 @@ class FMCWEngine:
         self.driver.rx_gain = self.rx1_gain
         self.driver.tx2_gain = self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
+
+        # FMCW requires sample rate > chirp bandwidth (Nyquist).
+        # bladeRF 2.0 MIMO max is ~30.72 MSPS per channel.
+        # Set sample rate to cover the sub-band chirp with margin.
+        required_rate = int(self.sub_band_bw * 1.25)  # 25% margin over chirp BW
+        max_mimo_rate = 30_720_000
+        fmcw_rate = min(required_rate, max_mimo_rate)
+        # Enforce minimum 4 MSPS for stable streaming
+        fmcw_rate = max(fmcw_rate, 4_000_000)
+
+        self.driver.sample_rate = fmcw_rate
+        self.driver.bandwidth = int(fmcw_rate * 0.8)
+        self._fmcw_sample_rate = fmcw_rate
+        print(f"[fmcw] Sample rate set to {fmcw_rate/1e6:.2f} MSPS for {self.sub_band_bw/1e6:.0f} MHz chirp")
+
         self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
@@ -282,7 +297,8 @@ class FMCWEngine:
 
     def _generate_chirp_iq(self, num_samples):
         """Generate baseband linear chirp from -BW/2 to +BW/2."""
-        t = np.arange(num_samples, dtype=np.float64) / self.driver.sample_rate
+        sample_rate = getattr(self, '_fmcw_sample_rate', self.driver.sample_rate)
+        t = np.arange(num_samples, dtype=np.float64) / sample_rate
         f0 = -self.sub_band_bw / 2
         f1 = self.sub_band_bw / 2
         # Linear FM: phase = 2π(f0·t + (f1-f0)/(2T)·t²)
@@ -523,8 +539,10 @@ class FMCWEngine:
 
     def _validation_test_loop(self, test_type):
         try:
+            print(f"[fmcw] Starting validation test: {test_type}")
             self._configure_hardware()
             self._start_tx_rx()
+            print(f"[fmcw] Hardware configured, TX/RX started. Running {test_type}...")
 
             if test_type == 'linearity':
                 result = self._test_linearity()
@@ -538,10 +556,13 @@ class FMCWEngine:
                 result = {'error': f'Unknown test type: {test_type}'}
 
             if result is not None and self._callback:
+                print(f"[fmcw] Test {test_type} complete: {'PASS' if result.get('pass') else 'FAIL'}")
                 self._callback(result)
 
         except Exception as e:
+            import traceback
             print(f"[fmcw] Validation test error: {e}")
+            traceback.print_exc()
             if self._callback:
                 self._callback({'error': str(e)})
         finally:

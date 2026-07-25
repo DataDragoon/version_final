@@ -58,7 +58,7 @@ export default function App() {
   const [fmcwParams, setFmcwParams] = useState({
     startFreq: 1000,
     stopFreq: 6000,
-    subBandBw: 56,
+    subBandBw: 20,
     chirpDuration: 50,
     pllSettleTime: 2,
     numChirpsAvg: 4,

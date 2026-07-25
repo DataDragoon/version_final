@@ -754,8 +754,7 @@ class FMCWEngine:
                 self._rx_event.clear()
                 self._rx_event.wait(timeout=1.0)
 
-            beat_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
-            captured = 0
+            beats = []
 
             for _ in range(num_avg):
                 self._rx_event.clear()
@@ -778,13 +777,22 @@ class FMCWEngine:
 
                 # De-chirp against aligned reference
                 beat = aligned * np.conj(chirp_ref)
-                beat_accum += beat
-                captured += 1
+                beats.append(beat)
 
-            if captured > 0:
-                beat_accum /= captured
-
-            beat_segments.append(beat_accum)
+            if len(beats) == 0:
+                beat_segments.append(np.zeros(samples_per_chirp, dtype=np.complex128))
+            elif len(beats) <= 2:
+                beat_segments.append(np.mean(beats, axis=0))
+            else:
+                # Robust averaging: discard outliers by correlation with median
+                beats_arr = np.array(beats)
+                median_beat = np.median(beats_arr.real, axis=0) + 1j * np.median(beats_arr.imag, axis=0)
+                # Score each capture by correlation with median
+                scores = np.array([np.abs(np.vdot(b, median_beat)) for b in beats])
+                # Keep captures above 50% of best score
+                threshold = 0.5 * np.max(scores)
+                good = beats_arr[scores >= threshold]
+                beat_segments.append(np.mean(good, axis=0))
 
             if self._callback and i % 5 == 0:
                 self._callback({

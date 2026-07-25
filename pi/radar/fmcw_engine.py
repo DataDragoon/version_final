@@ -339,6 +339,11 @@ class FMCWEngine:
         print(f"[bladerf] Single-channel configured: {self.driver.sample_rate/1e6:.4f} MSPS TX1={self.tx1_gain}dB RX1={self.rx1_gain}dB")
 
     def _start_tx_rx(self):
+        # Ensure any previous streams are fully stopped (USB needs time to release)
+        if self.driver.tx_running or self.driver.rx_running:
+            self._stop_tx_rx()
+        time.sleep(0.1)
+
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
         samples_per_chirp = int(self.chirp_duration * self.driver.sample_rate)
@@ -382,6 +387,7 @@ class FMCWEngine:
         else:
             self.driver.stop_rx()
             self.driver.stop_tx()
+        time.sleep(0.05)
 
     def _rx_capture_dual(self, rx1_iq, rx2_iq):
         self._rx_latest = (rx1_iq, rx2_iq)

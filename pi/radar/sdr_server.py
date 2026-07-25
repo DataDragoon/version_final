@@ -151,10 +151,9 @@ class SDRServer:
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_start':
-                if self.driver.tx_running:
-                    self.driver.stop_tx()
-                if self.driver.rx_running:
-                    self.driver.stop_rx()
+                if self.fmcw.running:
+                    self.fmcw.stop()
+                self._stop_all_streams()
                 await self._broadcast_status()
                 self.sfcw.start(self._sfcw_callback)
                 await self._broadcast_sfcw_status()
@@ -321,12 +320,11 @@ class SDRServer:
                 await self._broadcast_sfcw_status()
 
             elif action == 'fmcw_start':
-                if self.driver.tx_running:
-                    self.driver.stop_tx()
-                if self.driver.rx_running:
-                    self.driver.stop_rx()
                 if self.sfcw.running:
                     self.sfcw.stop()
+                if self.fmcw.running:
+                    self.fmcw.stop()
+                self._stop_all_streams()
                 await self._broadcast_status()
                 self.fmcw.start(self._sfcw_callback)
                 await self._broadcast_sfcw_status()
@@ -370,10 +368,7 @@ class SDRServer:
                     self.sfcw.stop()
                 if self.fmcw.running:
                     self.fmcw.stop()
-                if self.driver.tx_running:
-                    self.driver.stop_tx()
-                if self.driver.rx_running:
-                    self.driver.stop_rx()
+                self._stop_all_streams()
                 await self._broadcast_status()
                 self.fmcw.run_validation_test(test_type, self._sfcw_callback)
                 await self._broadcast_sfcw_status()
@@ -382,13 +377,12 @@ class SDRServer:
             elif action == 'sweep_capture':
                 if self.sfcw.running:
                     self.sfcw.stop()
+                if self.sfcw.running:
+                    self.sfcw.stop()
                 if self.fmcw.running:
                     self.fmcw.stop()
                     await self._broadcast_sfcw_status()
-                if self.driver.tx_running:
-                    self.driver.stop_tx()
-                if self.driver.rx_running:
-                    self.driver.stop_rx()
+                self._stop_all_streams()
                 await self._broadcast_status()
                 if self.sweep_mode == 'fmcw':
                     self.fmcw.run_single(self._sfcw_callback)
@@ -418,6 +412,19 @@ class SDRServer:
 
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))
+
+    def _stop_all_streams(self):
+        """Stop TX/RX in both single and dual channel modes."""
+        if self.driver._dual_channel:
+            if self.driver.tx_running:
+                self.driver.stop_tx_dual()
+            if self.driver.rx_running:
+                self.driver.stop_rx_dual()
+        else:
+            if self.driver.tx_running:
+                self.driver.stop_tx()
+            if self.driver.rx_running:
+                self.driver.stop_rx()
 
     def _get_sfcw_status(self):
         params = self.sfcw.get_params()

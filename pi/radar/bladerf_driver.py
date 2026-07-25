@@ -34,6 +34,7 @@ class BladeRFDriver:
         self._lock = threading.Lock()
         self._tx_buffer = None
         self._dual_channel = False
+        self._last_layout = None  # 'x1' or 'x2' — tracks sync_config state
 
     def open(self):
         self.device = bladerf.BladeRF()
@@ -46,6 +47,15 @@ class BladeRFDriver:
         if self.device:
             self.device.close()
             self.device = None
+
+    def reopen(self):
+        """Close and reopen device — required to reset sync_config channel layout."""
+        if self.device:
+            self.device.close()
+        self.device = bladerf.BladeRF()
+        self.serial = self.device.get_serial()
+        self._dual_channel = False
+        self._last_layout = None
 
     def _configure_channels(self):
         ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))
@@ -162,6 +172,8 @@ class BladeRFDriver:
     def start_tx(self):
         if self.tx_running:
             return
+        if self._last_layout == 'x2':
+            self.reopen()
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
         self._tx_stop.clear()
         self.tx_running = True
@@ -174,6 +186,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self._last_layout = 'x1'
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self._tx_thread.start()
 
@@ -204,6 +217,8 @@ class BladeRFDriver:
     def start_rx(self, callback, num_samples=16384):
         if self.rx_running:
             return
+        if self._last_layout == 'x2':
+            self.reopen()
         self._rx_stop.clear()
         self.rx_running = True
         self.device.enable_module(bladerf.CHANNEL_RX(0), True)
@@ -215,6 +230,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self._last_layout = 'x1'
         self._rx_thread = threading.Thread(target=self._rx_loop, args=(callback, num_samples), daemon=True)
         self._rx_thread.start()
 
@@ -249,6 +265,8 @@ class BladeRFDriver:
         """Start TX on both channels (TX1=antenna, TX2=reference cable)."""
         if self.tx_running:
             return
+        if self._last_layout == 'x1':
+            self.reopen()
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
         self._tx_stop.clear()
         self.tx_running = True
@@ -261,6 +279,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self._last_layout = 'x2'
         self.device.enable_module(bladerf.CHANNEL_TX(0), True)
         self.device.enable_module(bladerf.CHANNEL_TX(1), True)
         self._tx_thread = threading.Thread(target=self._tx_loop_dual, daemon=True)
@@ -303,6 +322,8 @@ class BladeRFDriver:
         """Start RX on both channels. Callback receives (rx1_iq, rx2_iq) tuple."""
         if self.rx_running:
             return
+        if self._last_layout == 'x1':
+            self.reopen()
         self._rx_stop.clear()
         self.rx_running = True
         self._dual_channel = True
@@ -314,6 +335,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self._last_layout = 'x2'
         self.device.enable_module(bladerf.CHANNEL_RX(0), True)
         self.device.enable_module(bladerf.CHANNEL_RX(1), True)
         self._rx_thread = threading.Thread(target=self._rx_loop_dual, args=(callback, num_samples), daemon=True)

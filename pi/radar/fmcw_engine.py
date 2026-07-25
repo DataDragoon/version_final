@@ -251,10 +251,16 @@ class FMCWEngine:
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
-        # Start RX in streaming mode — we'll feed chirp TX buffers manually
         samples_per_chirp = int(self.chirp_duration * self.driver.sample_rate)
-        # Use a buffer size that fits at least one chirp
         self._chirp_samples = max(1024, samples_per_chirp)
+
+        # Configure chirp waveform and start TX FIRST (same as SFCW)
+        # RX sync_rx blocks waiting for samples — TX must already be running
+        self.driver.set_waveform('chirp',
+                                 chirp_bw=self.sub_band_bw,
+                                 chirp_duration=self.chirp_duration,
+                                 amplitude=0.9)
+        self.driver.start_tx_dual()
         self.driver.start_rx_dual(self._rx_capture, num_samples=self._chirp_samples)
         time.sleep(0.05)
 
@@ -314,21 +320,6 @@ class FMCWEngine:
         center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
         freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
         rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
-
-        # Generate TX chirp buffer for bladeRF (IQ interleaved int16)
-        chirp_iq = self._generate_chirp_iq(samples_per_chirp)
-        tx_buf = np.empty(samples_per_chirp * 2, dtype=np.int16)
-        tx_buf[0::2] = np.clip(chirp_iq.real * 0.9 * 2047, -2048, 2047).astype(np.int16)
-        tx_buf[1::2] = np.clip(chirp_iq.imag * 0.9 * 2047, -2048, 2047).astype(np.int16)
-
-        # Set chirp waveform for TX (both channels get the same chirp)
-        self.driver.set_waveform('chirp',
-                                 chirp_bw=sub_bw,
-                                 chirp_duration=chirp_dur,
-                                 amplitude=0.9)
-        # Start TX after waveform is configured
-        self.driver.start_tx_dual()
-        time.sleep(0.02)
 
         for i in range(num_sub):
             if self._stop_event.is_set():
@@ -585,9 +576,7 @@ class FMCWEngine:
         freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
         rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
 
-        self.driver.set_waveform('chirp', chirp_bw=sub_bw, chirp_duration=chirp_dur, amplitude=0.9)
-        self.driver.start_tx_dual()
-        time.sleep(0.02)
+        # TX is already running from _start_tx_rx
 
         for i in range(num_sub):
             if self._stop_event.is_set():
@@ -641,7 +630,6 @@ class FMCWEngine:
                     'freq_mhz': center / 1e6,
                 })
 
-        self.driver.stop_tx_dual()
         return beat_signal, beat_ref, samples_per_chirp, num_sub
 
     def _test_linearity(self):
@@ -810,12 +798,7 @@ class FMCWEngine:
             beat_sig1[boundary:] *= np.exp(-1j * phi_err)
             beat_ref1[boundary:] *= np.exp(-1j * phi_err)
 
-        # Second sweep
-        self.driver.set_waveform('chirp', chirp_bw=self.sub_band_bw,
-                                 chirp_duration=self.chirp_duration, amplitude=0.9)
-        self.driver.start_tx_dual()
-        time.sleep(0.02)
-
+        # Second sweep (TX already running)
         beat_sig2, beat_ref2, _, _ = self._capture_single_sweep()
         if beat_sig2 is None:
             return None

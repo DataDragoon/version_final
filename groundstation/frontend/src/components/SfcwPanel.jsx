@@ -6,14 +6,20 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, sweepMode, fmcwParams, onFmcwParamsChange }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset, dbFloor, dbCeil } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
   };
 
+  const updateFmcw = (key, value) => {
+    onFmcwParamsChange({ ...fmcwParams, [key]: value });
+  };
+
   const canActivate = isConnected && sdrConnected;
+  const isFmcw = sweepMode === 'fmcw';
+  const isRunning = isFmcw ? sfcwStatus?.fmcw_running : sfcwRunning;
 
   const sendParams = (overrides = {}) => {
     sendSdr({
@@ -29,6 +35,23 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
     });
   };
 
+  const sendFmcwParams = (overrides = {}) => {
+    sendSdr({
+      cmd: 'fmcw_set_params',
+      start_freq_mhz: overrides.startFreq ?? fmcwParams.startFreq,
+      stop_freq_mhz: overrides.stopFreq ?? fmcwParams.stopFreq,
+      sub_band_bw_mhz: overrides.subBandBw ?? fmcwParams.subBandBw,
+      chirp_duration_us: overrides.chirpDuration ?? fmcwParams.chirpDuration,
+      pll_settle_time_ms: overrides.pllSettleTime ?? fmcwParams.pllSettleTime,
+      num_chirps_avg: overrides.numChirpsAvg ?? fmcwParams.numChirpsAvg,
+      overlap_fraction: overrides.overlapFraction ?? fmcwParams.overlapFraction,
+      tx1_gain: overrides.tx1Gain ?? fmcwParams.tx1Gain,
+      rx1_gain: overrides.rx1Gain ?? fmcwParams.rx1Gain,
+      range_offset: overrides.rangeOffset ?? fmcwParams.rangeOffset,
+    });
+  };
+
+  // SFCW computed values
   const numSteps = Math.floor((stopFreq - startFreq) / stepSize) + 1;
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
@@ -36,133 +59,302 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const captureTimeMs = numBuffers * BUFFER_TIME_MS;
   const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
 
+  // FMCW computed values
+  const fmcwBandwidth = ((fmcwParams?.stopFreq || 6000) - (fmcwParams?.startFreq || 1000)) * 1e6;
+  const fmcwRangeRes = fmcwBandwidth > 0 ? (299792458 / (2 * fmcwBandwidth)) : Infinity;
+  const fmcwSubStep = (fmcwParams?.subBandBw || 56) * (1.0 - (fmcwParams?.overlapFraction || 0));
+  const fmcwNumSub = Math.ceil(((fmcwParams?.stopFreq || 6000) - (fmcwParams?.startFreq || 1000)) / fmcwSubStep);
+  const fmcwSweepTime = fmcwNumSub * ((fmcwParams?.chirpDuration || 50) * 1e-6 * (fmcwParams?.numChirpsAvg || 4) + (fmcwParams?.pllSettleTime || 2) / 1000);
+
   return (
     <>
-      {/* Sweep Range */}
-      <Section label="Sweep Range">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Start"
-            value={startFreq}
-            unit="MHz"
-            onChange={(v) => { update('startFreq', v); sendParams({ startFreq: v }); }}
-            min={47}
-            max={6000}
-          />
-          <EditableField
-            label="Stop"
-            value={stopFreq}
-            unit="MHz"
-            onChange={(v) => { update('stopFreq', v); sendParams({ stopFreq: v }); }}
-            min={47}
-            max={6000}
-          />
+      {/* Mode Toggle */}
+      <Section label="Sweep Mode">
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'sfcw' })}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !isFmcw
+                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
+                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
+            )}
+          >
+            SFCW
+          </button>
+          <button
+            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'fmcw' })}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              isFmcw
+                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
+                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
+            )}
+          >
+            FMCW
+          </button>
         </div>
       </Section>
 
-      {/* Step Configuration */}
-      <Section label="Step Config">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Step Size"
-            value={stepSize}
-            unit="MHz"
-            onChange={(v) => { update('stepSize', v); sendParams({ stepSize: v }); }}
-            min={0.1}
-            max={500}
-          />
-          <EditableField
-            label="Settle"
-            value={settleTime}
-            unit="ms"
-            onChange={(v) => { update('settleTime', v); sendParams({ settleTime: v }); }}
-            min={0.1}
-            max={50}
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <EditableField
-            label="Buffers"
-            value={numBuffers}
-            unit="x1024 smp"
-            onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
-            min={1}
-            max={64}
-          />
-          <span className="text-[9px] text-[#333333] leading-tight px-1">
-            {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
-          </span>
-        </div>
-        <EditableField
-          label="Range Offset"
-          value={rangeOffset}
-          unit="m"
-          onChange={(v) => { update('rangeOffset', v); sendParams({ rangeOffset: v }); }}
-          min={0}
-          max={10}
-        />
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="dB Floor"
-            value={dbFloor}
-            unit="dB"
-            onChange={(v) => { update('dbFloor', v); }}
-            min={-120}
-            max={40}
-          />
-          <EditableField
-            label="dB Ceil"
-            value={dbCeil}
-            unit="dB"
-            onChange={(v) => { update('dbCeil', v); }}
-            min={-120}
-            max={40}
-          />
-        </div>
-      </Section>
+      {!isFmcw ? (
+        <>
+          {/* SFCW Parameters */}
+          <Section label="Sweep Range">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Start"
+                value={startFreq}
+                unit="MHz"
+                onChange={(v) => { update('startFreq', v); sendParams({ startFreq: v }); }}
+                min={47}
+                max={6000}
+              />
+              <EditableField
+                label="Stop"
+                value={stopFreq}
+                unit="MHz"
+                onChange={(v) => { update('stopFreq', v); sendParams({ stopFreq: v }); }}
+                min={47}
+                max={6000}
+              />
+            </div>
+          </Section>
 
-      {/* Gains */}
-      <Section label="Gains">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="TX1"
-            value={tx1Gain}
-            unit="dB"
-            onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
-            min={0}
-            max={30}
-          />
-          <EditableField
-            label="RX1"
-            value={rx1Gain}
-            unit="dB"
-            onChange={(v) => { update('rx1Gain', v); sendParams({ rx1Gain: v }); }}
-            min={0}
-            max={60}
-          />
-        </div>
-      </Section>
+          <Section label="Step Config">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Step Size"
+                value={stepSize}
+                unit="MHz"
+                onChange={(v) => { update('stepSize', v); sendParams({ stepSize: v }); }}
+                min={0.1}
+                max={500}
+              />
+              <EditableField
+                label="Settle"
+                value={settleTime}
+                unit="ms"
+                onChange={(v) => { update('settleTime', v); sendParams({ settleTime: v }); }}
+                min={0.1}
+                max={50}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <EditableField
+                label="Buffers"
+                value={numBuffers}
+                unit="x1024 smp"
+                onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
+                min={1}
+                max={64}
+              />
+              <span className="text-[9px] text-[#333333] leading-tight px-1">
+                {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
+              </span>
+            </div>
+            <EditableField
+              label="Range Offset"
+              value={rangeOffset}
+              unit="m"
+              onChange={(v) => { update('rangeOffset', v); sendParams({ rangeOffset: v }); }}
+              min={0}
+              max={10}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="dB Floor"
+                value={dbFloor}
+                unit="dB"
+                onChange={(v) => { update('dbFloor', v); }}
+                min={-120}
+                max={40}
+              />
+              <EditableField
+                label="dB Ceil"
+                value={dbCeil}
+                unit="dB"
+                onChange={(v) => { update('dbCeil', v); }}
+                min={-120}
+                max={40}
+              />
+            </div>
+          </Section>
 
-      {/* Sweep Info */}
-      <Section label="Sweep Info">
-        <div className="grid grid-cols-2 gap-2">
-          <InfoTile label="Steps" value={numSteps} />
-          <InfoTile label="Sweep" value={sweepTime < 1 ? `${(sweepTime * 1000).toFixed(0)} ms` : `${sweepTime.toFixed(1)} s`} />
-          <InfoTile label="Δr" value={rangeRes < 1 ? `${(rangeRes * 100).toFixed(1)} cm` : `${rangeRes.toFixed(2)} m`} />
-          <InfoTile label="R max" value={maxRange < 1000 ? `${maxRange.toFixed(1)} m` : `${(maxRange / 1000).toFixed(1)} km`} />
-        </div>
-      </Section>
+          <Section label="Gains">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="TX1"
+                value={tx1Gain}
+                unit="dB"
+                onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
+                min={0}
+                max={30}
+              />
+              <EditableField
+                label="RX1"
+                value={rx1Gain}
+                unit="dB"
+                onChange={(v) => { update('rx1Gain', v); sendParams({ rx1Gain: v }); }}
+                min={0}
+                max={60}
+              />
+            </div>
+          </Section>
 
-      {/* Sweep Control */}
+          <Section label="Sweep Info">
+            <div className="grid grid-cols-2 gap-2">
+              <InfoTile label="Steps" value={numSteps} />
+              <InfoTile label="Sweep" value={sweepTime < 1 ? `${(sweepTime * 1000).toFixed(0)} ms` : `${sweepTime.toFixed(1)} s`} />
+              <InfoTile label="Δr" value={rangeRes < 1 ? `${(rangeRes * 100).toFixed(1)} cm` : `${rangeRes.toFixed(2)} m`} />
+              <InfoTile label="R max" value={maxRange < 1000 ? `${maxRange.toFixed(1)} m` : `${(maxRange / 1000).toFixed(1)} km`} />
+            </div>
+          </Section>
+        </>
+      ) : (
+        <>
+          {/* FMCW Parameters */}
+          <Section label="Sweep Range">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Start"
+                value={fmcwParams?.startFreq ?? 1000}
+                unit="MHz"
+                onChange={(v) => { updateFmcw('startFreq', v); sendFmcwParams({ startFreq: v }); }}
+                min={47}
+                max={6000}
+              />
+              <EditableField
+                label="Stop"
+                value={fmcwParams?.stopFreq ?? 6000}
+                unit="MHz"
+                onChange={(v) => { updateFmcw('stopFreq', v); sendFmcwParams({ stopFreq: v }); }}
+                min={47}
+                max={6000}
+              />
+            </div>
+          </Section>
+
+          <Section label="Chirp Config">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Sub-band BW"
+                value={fmcwParams?.subBandBw ?? 56}
+                unit="MHz"
+                onChange={(v) => { updateFmcw('subBandBw', v); sendFmcwParams({ subBandBw: v }); }}
+                min={1}
+                max={56}
+              />
+              <EditableField
+                label="Chirp Dur"
+                value={fmcwParams?.chirpDuration ?? 50}
+                unit="μs"
+                onChange={(v) => { updateFmcw('chirpDuration', v); sendFmcwParams({ chirpDuration: v }); }}
+                min={10}
+                max={500}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="PLL Settle"
+                value={fmcwParams?.pllSettleTime ?? 2}
+                unit="ms"
+                onChange={(v) => { updateFmcw('pllSettleTime', v); sendFmcwParams({ pllSettleTime: v }); }}
+                min={0.1}
+                max={20}
+              />
+              <EditableField
+                label="Avg Chirps"
+                value={fmcwParams?.numChirpsAvg ?? 4}
+                unit="x"
+                onChange={(v) => { updateFmcw('numChirpsAvg', v); sendFmcwParams({ numChirpsAvg: v }); }}
+                min={1}
+                max={32}
+              />
+            </div>
+            <EditableField
+              label="Overlap"
+              value={fmcwParams?.overlapFraction ?? 0}
+              unit="frac"
+              onChange={(v) => { updateFmcw('overlapFraction', v); sendFmcwParams({ overlapFraction: v }); }}
+              min={0}
+              max={0.5}
+            />
+            <EditableField
+              label="Range Offset"
+              value={fmcwParams?.rangeOffset ?? 0.55}
+              unit="m"
+              onChange={(v) => { updateFmcw('rangeOffset', v); sendFmcwParams({ rangeOffset: v }); }}
+              min={0}
+              max={10}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="dB Floor"
+                value={fmcwParams?.dbFloor ?? -90}
+                unit="dB"
+                onChange={(v) => { updateFmcw('dbFloor', v); }}
+                min={-120}
+                max={40}
+              />
+              <EditableField
+                label="dB Ceil"
+                value={fmcwParams?.dbCeil ?? -20}
+                unit="dB"
+                onChange={(v) => { updateFmcw('dbCeil', v); }}
+                min={-120}
+                max={40}
+              />
+            </div>
+          </Section>
+
+          <Section label="Gains">
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="TX1"
+                value={fmcwParams?.tx1Gain ?? 30}
+                unit="dB"
+                onChange={(v) => { updateFmcw('tx1Gain', v); sendFmcwParams({ tx1Gain: v }); }}
+                min={0}
+                max={30}
+              />
+              <EditableField
+                label="RX1"
+                value={fmcwParams?.rx1Gain ?? 30}
+                unit="dB"
+                onChange={(v) => { updateFmcw('rx1Gain', v); sendFmcwParams({ rx1Gain: v }); }}
+                min={0}
+                max={60}
+              />
+            </div>
+          </Section>
+
+          <Section label="Sweep Info">
+            <div className="grid grid-cols-2 gap-2">
+              <InfoTile label="Sub-bands" value={fmcwNumSub} />
+              <InfoTile label="Sweep" value={fmcwSweepTime < 1 ? `${(fmcwSweepTime * 1000).toFixed(0)} ms` : `${fmcwSweepTime.toFixed(2)} s`} />
+              <InfoTile label="Δr" value={fmcwRangeRes < 1 ? `${(fmcwRangeRes * 100).toFixed(1)} cm` : `${fmcwRangeRes.toFixed(2)} m`} />
+              <InfoTile label="BW" value={`${(fmcwBandwidth / 1e9).toFixed(1)} GHz`} />
+            </div>
+          </Section>
+        </>
+      )}
+
+      {/* Sweep Control (shared) */}
       <Section label="Sweep">
         <ToggleButton
-          active={sfcwRunning}
+          active={isRunning}
           canActivate={canActivate}
-          onToggle={() => sendSdr({ cmd: sfcwRunning ? 'sfcw_stop' : 'sfcw_start' })}
+          onToggle={() => {
+            if (isFmcw) {
+              sendSdr({ cmd: isRunning ? 'fmcw_stop' : 'fmcw_start' });
+            } else {
+              sendSdr({ cmd: isRunning ? 'sfcw_stop' : 'sfcw_start' });
+            }
+          }}
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
-          activeSubLabel={`Sweeping ${startFreq}–${stopFreq} MHz`}
-          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${numSteps} steps ready`}
+          activeSubLabel={`${isFmcw ? 'FMCW' : 'SFCW'} sweeping ${isFmcw ? (fmcwParams?.startFreq ?? 1000) : startFreq}–${isFmcw ? (fmcwParams?.stopFreq ?? 6000) : stopFreq} MHz`}
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${isFmcw ? fmcwNumSub + ' sub-bands' : numSteps + ' steps'} ready`}
           color="orange"
         />
         <div className="flex items-center justify-between px-1 mt-2 mb-1">
@@ -174,11 +366,11 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => sendSdr({ cmd: 'sfcw_capture_bg' })}
-            disabled={!sfcwRunning}
+            onClick={() => sendSdr({ cmd: isFmcw ? 'fmcw_capture_bg' : 'sfcw_capture_bg' })}
+            disabled={!isRunning}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              !sfcwRunning
+              !isRunning
                 ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
                 : sfcwStatus?.sub_mode === 'background'
                   ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
@@ -188,11 +380,11 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             Capture BG
           </button>
           <button
-            onClick={() => sendSdr({ cmd: 'sfcw_capture_ref' })}
-            disabled={!sfcwRunning}
+            onClick={() => sendSdr({ cmd: isFmcw ? 'fmcw_capture_ref' : 'sfcw_capture_ref' })}
+            disabled={!isRunning}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              !sfcwRunning
+              !isRunning
                 ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
                 : sfcwStatus?.sub_mode === 'reference'
                   ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
@@ -203,7 +395,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           </button>
         </div>
         <button
-          onClick={() => sendSdr({ cmd: 'sfcw_clear_all' })}
+          onClick={() => sendSdr({ cmd: isFmcw ? 'fmcw_clear_all' : 'sfcw_clear_all' })}
           disabled={!sfcwStatus?.sub_mode}
           className={cn(
             'w-full mt-1 px-3 py-2 rounded-lg text-xs font-medium transition-all',

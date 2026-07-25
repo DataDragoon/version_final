@@ -6,7 +6,7 @@ export default function SeepagePanel({
   isConnected, sdrConnected, scanData, scanCapturing, onScanAction,
   params, onParamsChange, progress, hasReference,
 }) {
-  const { stepSize, wallThickness, mode, dbFloor, dbCeil, slopeMin, slopeMax } = params;
+  const { stepSize, wallThickness, rangeOffset, dbFloor, dbCeil, subDbFloor, subDbCeil, slopeMin, slopeMax, deconvolve } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -28,6 +28,16 @@ export default function SeepagePanel({
             min={1}
             max={100}
           />
+          <EditableField
+            label="Offset"
+            value={rangeOffset}
+            unit="cm"
+            onChange={(v) => update('rangeOffset', v)}
+            min={0}
+            max={200}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
           <EditableField
             label="Step"
             value={stepSize}
@@ -82,11 +92,29 @@ export default function SeepagePanel({
         </p>
       </Section>
 
+      {/* Deconvolve */}
+      <Section label="Processing">
+        <button
+          onClick={() => update('deconvolve', !deconvolve)}
+          className={cn(
+            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+            deconvolve
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+              : 'bg-white/5 border-white/10 text-white/50 hover:text-white hover:bg-white/10'
+          )}
+        >
+          {deconvolve ? 'Surface Deconvolution ON' : 'Surface Deconvolution OFF'}
+        </button>
+        <p className="text-[10px] text-white/30 leading-relaxed">
+          Normalizes coupling variations by dividing each position's spectrum by its surface echo.
+        </p>
+      </Section>
+
       {/* Scan */}
       <Section label="Scan">
         <div className="grid grid-cols-2 gap-2">
           <InfoTile label="Captured" value={captured} />
-          <InfoTile label="Aperture" value={`${((captured - 1) * stepSize).toFixed(0)} cm`} />
+          <InfoTile label="Aperture" value={`${(Math.max(0, captured - 1) * stepSize).toFixed(0)} cm`} />
         </div>
         <button
           onClick={() => onScanAction('capture')}
@@ -130,47 +158,28 @@ export default function SeepagePanel({
         </button>
       </Section>
 
-      {/* Display Mode */}
-      <Section label="Mode">
-        <div className="flex gap-2">
-          <button
-            onClick={() => update('mode', 'amplitude')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              mode === 'amplitude'
-                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            Amplitude
-          </button>
-          <button
-            onClick={() => update('mode', 'spectral')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              mode === 'spectral'
-                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            Spectral
-          </button>
+      {/* Display Range */}
+      <Section label="Raw Range">
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField label="dB Floor" value={dbFloor} unit="dB" onChange={(v) => update('dbFloor', v)} min={-120} max={80} />
+          <EditableField label="dB Ceil" value={dbCeil} unit="dB" onChange={(v) => update('dbCeil', v)} min={-120} max={80} />
         </div>
       </Section>
 
-      {/* Display Range */}
-      <Section label="Display">
-        {mode === 'amplitude' ? (
+      {hasReference && (
+        <Section label="Sub Range">
           <div className="grid grid-cols-2 gap-2">
-            <EditableField label="dB Floor" value={dbFloor} unit="dB" onChange={(v) => update('dbFloor', v)} min={-120} max={40} />
-            <EditableField label="dB Ceil" value={dbCeil} unit="dB" onChange={(v) => update('dbCeil', v)} min={-120} max={40} />
+            <EditableField label="dB Floor" value={subDbFloor} unit="dB" onChange={(v) => update('subDbFloor', v)} min={-120} max={80} />
+            <EditableField label="dB Ceil" value={subDbCeil} unit="dB" onChange={(v) => update('subDbCeil', v)} min={-120} max={80} />
           </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2">
-            <EditableField label="Slope Min" value={slopeMin} unit="dB" onChange={(v) => update('slopeMin', v)} min={-20} max={30} />
-            <EditableField label="Slope Max" value={slopeMax} unit="dB" onChange={(v) => update('slopeMax', v)} min={-20} max={30} />
-          </div>
-        )}
+        </Section>
+      )}
+
+      <Section label="Slope Range">
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField label="Slope Min" value={slopeMin} unit="dB" onChange={(v) => update('slopeMin', v)} min={-30} max={30} />
+          <EditableField label="Slope Max" value={slopeMax} unit="dB" onChange={(v) => update('slopeMax', v)} min={-30} max={30} />
+        </div>
       </Section>
 
       {/* Progress */}

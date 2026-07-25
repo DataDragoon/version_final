@@ -9,6 +9,7 @@ import websockets
 
 from bladerf_driver import BladeRFDriver
 from sfcw_engine import SFCWEngine
+from fmcw_engine import FMCWEngine
 
 SCALE = 2047
 PORT = 9003
@@ -21,6 +22,8 @@ class SDRServer:
     def __init__(self):
         self.driver = BladeRFDriver()
         self.sfcw = SFCWEngine(self.driver)
+        self.fmcw = FMCWEngine(self.driver)
+        self.sweep_mode = 'sfcw'  # 'sfcw' or 'fmcw'
         self.clients = set()
         self.rx_queue = asyncio.Queue(maxsize=4)
         self.sfcw_queue = asyncio.Queue(maxsize=8)
@@ -49,6 +52,8 @@ class SDRServer:
         try:
             await ws.send(json.dumps({'type': 'status', **self.driver.get_status()}))
             await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
+            await ws.send(json.dumps({'type': 'fmcw_status', **self._get_fmcw_status()}))
+            await ws.send(json.dumps({'type': 'sweep_mode', 'mode': self.sweep_mode}))
             async for msg in ws:
                 await self._dispatch(ws, json.loads(msg))
         except websockets.ConnectionClosed:
@@ -247,12 +252,164 @@ class SDRServer:
                     **self.sfcw.load_calibration_status(),
                 }))
 
+            # Sweep mode toggle
+            elif action == 'set_sweep_mode':
+                mode = cmd.get('mode')
+                if mode in ('sfcw', 'fmcw'):
+                    # Stop any active sweep before switching
+                    if self.sfcw.running:
+                        self.sfcw.stop()
+                    if self.fmcw.running:
+                        self.fmcw.stop()
+                    self.sweep_mode = mode
+                    await self._broadcast_sfcw_status()
+
+            elif action == 'get_sweep_mode':
+                await ws.send(json.dumps({'type': 'sweep_mode', 'mode': self.sweep_mode}))
+
+            # FMCW commands
+            elif action == 'fmcw_set_params':
+                params = {}
+                if 'start_freq_mhz' in cmd:
+                    params['start_freq'] = float(cmd['start_freq_mhz']) * 1e6
+                if 'stop_freq_mhz' in cmd:
+                    params['stop_freq'] = float(cmd['stop_freq_mhz']) * 1e6
+                if 'sub_band_bw_mhz' in cmd:
+                    params['sub_band_bw'] = float(cmd['sub_band_bw_mhz']) * 1e6
+                if 'chirp_duration_us' in cmd:
+                    params['chirp_duration'] = float(cmd['chirp_duration_us']) * 1e-6
+                if 'pll_settle_time_ms' in cmd:
+                    params['pll_settle_time'] = float(cmd['pll_settle_time_ms']) / 1000
+                if 'num_chirps_avg' in cmd:
+                    params['num_chirps_avg'] = int(cmd['num_chirps_avg'])
+                if 'overlap_fraction' in cmd:
+                    params['overlap_fraction'] = float(cmd['overlap_fraction'])
+                if 'tx1_gain' in cmd:
+                    params['tx1_gain'] = int(cmd['tx1_gain'])
+                if 'rx1_gain' in cmd:
+                    params['rx1_gain'] = int(cmd['rx1_gain'])
+                if 'tx2_gain' in cmd:
+                    params['tx2_gain'] = int(cmd['tx2_gain'])
+                if 'rx2_gain' in cmd:
+                    params['rx2_gain'] = int(cmd['rx2_gain'])
+                if 'range_offset' in cmd:
+                    params['range_offset'] = float(cmd['range_offset'])
+                needs_restart = self.fmcw.running and any(
+                    k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
+                                          'start_freq', 'stop_freq', 'sub_band_bw')
+                )
+                self.fmcw.set_params(**params)
+                if needs_restart:
+                    self.fmcw.stop()
+                    self.fmcw.start(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_start':
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                await self._broadcast_status()
+                self.fmcw.start(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_stop':
+                self.fmcw.stop()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_capture_bg':
+                self.fmcw.capture_background()
+
+            elif action == 'fmcw_clear_bg':
+                self.fmcw.clear_background()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_capture_ref':
+                self.fmcw.capture_reference()
+
+            elif action == 'fmcw_clear_ref':
+                self.fmcw.clear_reference()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_clear_all':
+                self.fmcw.clear_all_subtraction()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'fmcw_get_status':
+                await ws.send(json.dumps({'type': 'fmcw_status', **self._get_fmcw_status()}))
+
+            # FMCW validation tests
+            elif action == 'fmcw_test':
+                test_type = cmd.get('test_type')
+                if test_type not in ('linearity', 'stitching', 'repeatability', 'phase_residual'):
+                    await ws.send(json.dumps({'type': 'error', 'message': f'Invalid test type: {test_type}'}))
+                    return
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                if self.fmcw.running:
+                    self.fmcw.stop()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                self.fmcw.run_validation_test(test_type, self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            # B-scan with active sweep mode
+            elif action == 'sweep_capture':
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                if self.fmcw.running:
+                    self.fmcw.stop()
+                    await self._broadcast_sfcw_status()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                if self.sweep_mode == 'fmcw':
+                    self.fmcw.run_single(self._sfcw_callback)
+                else:
+                    self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sweep_capture_bg':
+                if self.sweep_mode == 'fmcw':
+                    self.fmcw.capture_background()
+                else:
+                    self.sfcw.capture_background()
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                if self.fmcw.running:
+                    self.fmcw.stop()
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+                if self.sweep_mode == 'fmcw':
+                    self.fmcw.run_single(self._sfcw_callback)
+                else:
+                    self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))
 
     def _get_sfcw_status(self):
         params = self.sfcw.get_params()
         params['running'] = self.sfcw.running
+        params['sweep_mode'] = self.sweep_mode
+        params['fmcw_running'] = self.fmcw.running
+        return params
+
+    def _get_fmcw_status(self):
+        params = self.fmcw.get_params()
+        params['running'] = self.fmcw.running
+        params['sweep_mode'] = self.sweep_mode
         return params
 
     def _sfcw_callback(self, data):
@@ -338,6 +495,10 @@ class SDRServer:
                     result_msg['freqs'] = data['freqs']
                 msg = json.dumps(result_msg)
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
+                msg = json.dumps(data)
+            elif isinstance(data, dict) and data.get('type') == 'fmcw_test_result':
+                msg = json.dumps(data)
+            elif isinstance(data, dict) and data.get('type') == 'fmcw_status':
                 msg = json.dumps(data)
             else:
                 continue

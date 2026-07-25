@@ -40,7 +40,7 @@ export default function SarDisplay({ sarResult, sarParams }) {
     }
 
     const { image, pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax } = sarResult;
-    const { dbFloor, dbCeil } = sarParams;
+    const { dbFloor, dbCeil, wallEnabled, wallStandoff, wallThickness } = sarParams;
 
     const pad = { top: 32, bottom: 40, left: 60, right: 30 };
     const plotW = w - pad.left - pad.right;
@@ -149,6 +149,34 @@ export default function SarDisplay({ sarResult, sarParams }) {
     ctx.textAlign = 'left';
     ctx.fillText(`${dbCeil}`, barX, barY - 4);
     ctx.fillText(`${dbFloor}`, barX, barY + barH + 10);
+
+    // Wall boundary indicators
+    if (wallEnabled) {
+      const wallFrontM = (wallStandoff || 5) / 100;
+      const wallBackM = wallFrontM + (wallThickness || 15) / 100;
+      const depthRange = depthMax - depthMin;
+
+      const drawWallLine = (depthM, label) => {
+        if (depthM < depthMin || depthM > depthMax) return;
+        const yFrac = (depthM - depthMin) / depthRange;
+        const y = pad.top + yFrac * plotH;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#f59e0b88';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, pad.left + 4, y - 3);
+      };
+
+      drawWallLine(wallFrontM, 'wall front');
+      drawWallLine(wallBackM, 'wall back');
+    }
 
     // Crosshair
     if (crosshair) {

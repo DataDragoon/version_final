@@ -171,6 +171,47 @@ export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStat
           Refresh
         </button>
       </Section>
+
+      {/* FMCW Validation Tests */}
+      <Section label="FMCW Validation">
+        <div className="border-l-2 border-[#A78BFA]/30 pl-2.5 py-1 bg-white/[0.02] rounded-r-lg mb-2">
+          <span className="text-[10px] text-[#777777] leading-relaxed">
+            Requires cable-through setup (TX1 → cable → RX1, TX2 → cable → RX2). Tests validate synthetic bandwidth chirp stitching quality.
+          </span>
+        </div>
+
+        <FmcwTestCard
+          title="Chirp Linearity"
+          description="Measures residual phase after de-chirp on cable reference. Deviation from linear = filter distortion."
+          metric="< 5° RMS = pass"
+          canRun={canCapture}
+          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'linearity' })}
+        />
+
+        <FmcwTestCard
+          title="Stitching Quality"
+          description="Phase jumps at sub-band boundaries before/after correction. Checks for ghost peaks (PSLR)."
+          metric="< 3° RMS jump, PSLR < -20 dB = pass"
+          canRun={canCapture}
+          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'stitching' })}
+        />
+
+        <FmcwTestCard
+          title="Repeatability"
+          description="Back-to-back sweeps — measures correlation and residual difference. Low repeatability = stitching not correcting properly."
+          metric="Correlation > 0.99, residual < -40 dB = pass"
+          canRun={canCapture}
+          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'repeatability' })}
+        />
+
+        <FmcwTestCard
+          title="Phase Residual"
+          description="Full-bandwidth phase linearity on cable. The most direct measure of synthetic bandwidth quality."
+          metric="< 5° RMS residual = pass"
+          canRun={canCapture}
+          onRun={() => sendSdr({ cmd: 'fmcw_test', test_type: 'phase_residual' })}
+        />
+      </Section>
     </>
   );
 }
@@ -232,6 +273,36 @@ function CalCard({ title, instructions, status, capturing, canCapture, onCapture
           Last: {new Date(status.timestamp).toLocaleString()}
         </span>
       )}
+    </div>
+  );
+}
+
+function FmcwTestCard({ title, description, metric, canRun, onRun }) {
+  return (
+    <div className="flex flex-col gap-2 p-3 rounded-xl border border-white/5 bg-[#0a0a0a]/40 mb-2">
+      <span className="text-xs font-semibold text-white">{title}</span>
+      <span className="text-[10px] text-[#777777] leading-relaxed">{description}</span>
+      <span className="text-[9px] text-[#A78BFA]/70 font-mono">{metric}</span>
+      <button
+        onClick={onRun}
+        disabled={!canRun}
+        className={cn(
+          'group relative flex items-center gap-3 w-full p-2.5 rounded-xl border',
+          'transition-all duration-500 cursor-pointer',
+          'disabled:cursor-not-allowed disabled:opacity-40',
+          canRun
+            ? 'bg-[#A78BFA]/8 border-[#A78BFA]/30 hover:border-[#A78BFA]/50'
+            : 'bg-[#0a0a0a]/50 border-white/5',
+        )}
+      >
+        <div className={cn(
+          'flex items-center justify-center w-6 h-6 rounded-lg shrink-0 transition-all duration-500',
+          canRun ? 'bg-[#A78BFA]/15' : 'bg-white/5',
+        )}>
+          <div className="w-2 h-2 rounded-full border-2 border-current text-[#A78BFA]" />
+        </div>
+        <span className="text-xs font-medium text-white/70">Run Test</span>
+      </button>
     </div>
   );
 }

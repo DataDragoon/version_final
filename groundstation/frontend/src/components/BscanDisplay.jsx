@@ -12,6 +12,25 @@ function jet(t) {
   ];
 }
 
+function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPermittivity) {
+  const standoffM = wallStandoff / 100;
+  const thicknessM = wallThickness / 100;
+  const sqrtEr = Math.sqrt(wallPermittivity);
+  const wallApparentThickness = thicknessM * sqrtEr;
+  const wallFrontApparent = standoffM;
+  const wallBackApparent = standoffM + wallApparentThickness;
+
+  return distances.map(d => {
+    if (d <= wallFrontApparent) {
+      return d;
+    } else if (d <= wallBackApparent) {
+      return standoffM + (d - wallFrontApparent) / sqrtEr;
+    } else {
+      return standoffM + thicknessM + (d - wallBackApparent);
+    }
+  });
+}
+
 export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20, distMin = 0, distMax = null }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -45,8 +64,11 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     const plotH = h - pad.top - pad.bottom;
 
     const numPos = scanData.length;
-    const allDistances = scanData[0].distances;
-    const { stepSize } = params;
+    const rawDistances = scanData[0].distances;
+    const { stepSize, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
+    const allDistances = wallEnabled
+      ? correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity)
+      : rawDistances;
     const apertureLen = (numPos - 1) * stepSize;
 
     // Distance range filtering
@@ -174,6 +196,34 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
     ctx.textAlign = 'left';
     ctx.fillText(`${dbMax} dB`, barX, barY - 4);
     ctx.fillText(`${dbMin} dB`, barX, barY + barH + 10);
+
+    // Wall boundary indicators
+    if (wallEnabled) {
+      const wallFrontM = wallStandoff / 100;
+      const wallBackM = wallFrontM + wallThickness / 100;
+      const distRange = maxDist - minDist;
+
+      const drawWallLine = (distM, label) => {
+        if (distM < minDist || distM > maxDist) return;
+        const yFrac = (distM - minDist) / distRange;
+        const y = pad.top + yFrac * plotH;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#f59e0b88';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, pad.left + 4, y - 3);
+      };
+
+      drawWallLine(wallFrontM, 'wall front');
+      drawWallLine(wallBackM, 'wall back');
+    }
 
     // Crosshair
     if (crosshair) {

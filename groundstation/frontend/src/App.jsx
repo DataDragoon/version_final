@@ -37,6 +37,9 @@ export default function App() {
   const [sfcwResult, setSfcwResult] = useState(null);
   const [sfcwProgress, setSfcwProgress] = useState(null);
 
+  // Sweep mode (sfcw or fmcw)
+  const [sweepMode, setSweepMode] = useState('sfcw');
+
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
     startFreq: 1000,
@@ -44,6 +47,22 @@ export default function App() {
     stepSize: 10,
     settleTime: 3,
     numBuffers: 4,
+    tx1Gain: 30,
+    rx1Gain: 30,
+    rangeOffset: 0.55,
+    dbFloor: -90,
+    dbCeil: -20,
+  });
+
+  // FMCW panel params
+  const [fmcwParams, setFmcwParams] = useState({
+    startFreq: 1000,
+    stopFreq: 6000,
+    subBandBw: 56,
+    chirpDuration: 50,
+    pllSettleTime: 2,
+    numChirpsAvg: 4,
+    overlapFraction: 0,
     tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.55,
@@ -63,6 +82,10 @@ export default function App() {
     dbCeil: -20,
     distMin: 0,
     distMax: null,  // null = auto (full range)
+    wallEnabled: true,
+    wallStandoff: 5,    // cm - distance from antenna to wall front face
+    wallThickness: 15,  // cm
+    wallPermittivity: 4.5, // relative permittivity (concrete ~4-6)
   });
 
   // SVD filter state
@@ -90,6 +113,10 @@ export default function App() {
     window: 'blackman-harris',
     dbFloor: -85,
     dbCeil: -60,
+    wallEnabled: true,
+    wallStandoff: 5,    // cm
+    wallThickness: 15,  // cm
+    wallPermittivity: 4.5,
   });
 
   const { sarResult, sarProgress } = useSarWorker(bscanData, bscanParams, sarParams);
@@ -102,11 +129,15 @@ export default function App() {
   const [seepageParams, setSeepageParams] = useState({
     stepSize: 5,
     wallThickness: 15,
+    rangeOffset: 55,
     mode: 'amplitude',
-    dbFloor: -50,
-    dbCeil: -20,
-    slopeMin: 2,
-    slopeMax: 15,
+    dbFloor: 5,
+    dbCeil: 35,
+    subDbFloor: -10,
+    subDbCeil: 20,
+    slopeMin: -5,
+    slopeMax: 5,
+    deconvolve: false,
   });
 
   const { result: seepageResult, progress: seepageProgress } = useSeepageWorker(seepageData, seepageParams, seepageRef);
@@ -157,12 +188,22 @@ export default function App() {
       setRxSamples(msg.i);
     } else if (msg.type === 'rx_fft') {
       setFftData({ magnitudes: msg.magnitudes, freq_span: msg.freq_span || 2000000 });
+    } else if (msg.type === 'sweep_mode') {
+      setSweepMode(msg.mode);
+    } else if (msg.type === 'fmcw_status') {
+      // Update sfcwStatus with fmcw info so the panel can read fmcw_running
+      setSfcwStatus(prev => ({ ...prev, fmcw_running: msg.running, sweep_mode: msg.sweep_mode }));
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
+      if (msg.sweep_mode) setSweepMode(msg.sweep_mode);
       if (msg.background_active !== undefined) {
         setBscanBgCaptured(msg.background_active);
       }
+    } else if (msg.type === 'fmcw_test_result') {
+      // Route to hw calibration display
+      setHwCalResult(msg);
+      setHwCalMode('fmcw_test');
     } else if (msg.type === 'sfcw_result') {
       if (bscanPendingRef.current === 'capture') {
         const posData = { magnitudes: [...msg.magnitudes], distances: [...msg.distances] };
@@ -262,11 +303,11 @@ export default function App() {
     if (action === 'capture') {
       bscanPendingRef.current = 'capture';
       setBscanCapturing(true);
-      sendSdr({ cmd: 'bscan_capture' });
+      sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'capture_bg') {
       bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
-      sendSdr({ cmd: 'bscan_capture_bg' });
+      sendSdr({ cmd: 'sweep_capture_bg' });
     } else if (action === 'clear_bg') {
       sendSdr({ cmd: 'bscan_clear_bg' });
       setBscanBgCaptured(false);
@@ -360,11 +401,11 @@ export default function App() {
     if (action === 'capture') {
       seepagePendingRef.current = 'capture';
       setSeepageCapturing(true);
-      sendSdr({ cmd: 'bscan_capture' });
+      sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'capture_ref') {
       seepagePendingRef.current = 'capture_ref';
       setSeepageCapturing(true);
-      sendSdr({ cmd: 'bscan_capture' });
+      sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'clear_ref') {
       setSeepageRef(null);
     } else if (action === 'new') {
@@ -487,6 +528,9 @@ export default function App() {
         sfcwParams={sfcwParams}
         onSfcwParamsChange={setSfcwParams}
         sfcwResult={sfcwResult}
+        sweepMode={sweepMode}
+        fmcwParams={fmcwParams}
+        onFmcwParamsChange={setFmcwParams}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
         bscanBgCaptured={bscanBgCaptured}

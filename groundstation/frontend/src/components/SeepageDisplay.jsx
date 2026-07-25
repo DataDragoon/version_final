@@ -19,9 +19,15 @@ function heatmap(t) {
   return [r, g, b];
 }
 
-function drawHeatmap(ctx, x0, y0, plotW, plotH, dataMap, numPos, numDepthBins, dMin, dMax) {
+function drawPanel(ctx, ox, oy, pw, ph, dataMap, numPos, numDepthBins, depthAxis, stepSize, dMin, dMax, title, unit) {
+  const pad = { top: 24, bottom: 28, left: 42, right: 28 };
+  const plotW = pw - pad.left - pad.right;
+  const plotH = ph - pad.top - pad.bottom;
+
   const cellW = plotW / numPos;
   const cellH = plotH / numDepthBins;
+
+  // Heatmap
   for (let xi = 0; xi < numPos; xi++) {
     for (let yi = 0; yi < numDepthBins; yi++) {
       const val = dataMap[xi * numDepthBins + yi];
@@ -29,75 +35,69 @@ function drawHeatmap(ctx, x0, y0, plotW, plotH, dataMap, numPos, numDepthBins, d
       const [r, g, b] = heatmap(t);
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(
-        x0 + xi * cellW,
-        y0 + yi * cellH,
+        ox + pad.left + xi * cellW,
+        oy + pad.top + yi * cellH,
         Math.ceil(cellW) + 1,
         Math.ceil(cellH) + 1
       );
     }
   }
-}
 
-function drawAxesAndGrid(ctx, pad, plotW, plotH, w, h, numPos, numDepthBins, depthAxis, stepSize, params, useSlope, dMin, dMax, title) {
+  // Grid
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 0.5;
-  ctx.globalAlpha = 0.4;
-  const yTicks = 5;
+  ctx.globalAlpha = 0.3;
+  const yTicks = 4;
   for (let i = 0; i <= yTicks; i++) {
-    const y = pad.top + (i / yTicks) * plotH;
-    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + plotW, y); ctx.stroke();
+    const y = oy + pad.top + (i / yTicks) * plotH;
+    ctx.beginPath(); ctx.moveTo(ox + pad.left, y); ctx.lineTo(ox + pad.left + plotW, y); ctx.stroke();
   }
-  const xTicks = 5;
+  const xTicks = 4;
   for (let i = 0; i <= xTicks; i++) {
-    const x = pad.left + (i / xTicks) * plotW;
-    ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + plotH); ctx.stroke();
+    const x = ox + pad.left + (i / xTicks) * plotW;
+    ctx.beginPath(); ctx.moveTo(x, oy + pad.top); ctx.lineTo(x, oy + pad.top + plotH); ctx.stroke();
   }
   ctx.globalAlpha = 1.0;
 
+  // Y labels (depth)
   const maxDepth = depthAxis[numDepthBins - 1];
   for (let i = 0; i <= yTicks; i++) {
-    const y = pad.top + (i / yTicks) * plotH;
+    const y = oy + pad.top + (i / yTicks) * plotH;
     const depth = (i / yTicks) * maxDepth;
     ctx.fillStyle = '#555555';
-    ctx.font = '9px monospace';
+    ctx.font = '8px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${depth.toFixed(1)}`, pad.left - 4, y + 3);
+    ctx.fillText(`${depth.toFixed(1)}`, ox + pad.left - 4, y + 3);
   }
 
+  // X labels (position)
   const apertureLen = (numPos - 1) * stepSize;
   for (let i = 0; i <= xTicks; i++) {
-    const x = pad.left + (i / xTicks) * plotW;
+    const x = ox + pad.left + (i / xTicks) * plotW;
     const pos = (i / xTicks) * apertureLen;
     ctx.fillStyle = '#555555';
-    ctx.font = '9px monospace';
+    ctx.font = '8px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${pos.toFixed(0)}`, x, pad.top + plotH + 12);
+    ctx.fillText(`${pos.toFixed(0)}`, x, oy + pad.top + plotH + 10);
   }
 
+  // Axis labels
   ctx.fillStyle = '#444444';
-  ctx.font = '9px monospace';
+  ctx.font = '8px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('Position (cm)', pad.left + plotW / 2, pad.top + plotH + 24);
+  ctx.fillText('pos (cm)', ox + pad.left + plotW / 2, oy + pad.top + plotH + 22);
 
-  ctx.save();
-  ctx.translate(10, pad.top + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = '#444444';
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('Depth (cm)', 0, 0);
-  ctx.restore();
-
+  // Title
   ctx.fillStyle = '#60a5fa';
-  ctx.font = 'bold 10px monospace';
+  ctx.font = 'bold 9px monospace';
   ctx.textAlign = 'left';
-  ctx.fillText(title, pad.left, pad.top - 8);
+  ctx.fillText(title, ox + pad.left, oy + 12);
 
   // Color bar
-  const barW = 10;
+  const barW = 8;
   const barH = plotH;
-  const barX = pad.left + plotW + 6;
-  const barY = pad.top;
+  const barX = ox + pad.left + plotW + 4;
+  const barY = oy + pad.top;
   for (let i = 0; i < barH; i++) {
     const t = 1 - i / barH;
     const [r, g, b] = heatmap(t);
@@ -105,18 +105,18 @@ function drawAxesAndGrid(ctx, pad, plotW, plotH, w, h, numPos, numDepthBins, dep
     ctx.fillRect(barX, barY + i, barW, 1);
   }
   ctx.fillStyle = '#555555';
-  ctx.font = '8px monospace';
+  ctx.font = '7px monospace';
   ctx.textAlign = 'left';
-  ctx.fillText(`${dMax}`, barX, barY - 4);
-  ctx.fillText(`${dMin}`, barX, barY + barH + 10);
+  ctx.fillText(`${dMax}`, barX + barW + 2, barY + 4);
+  ctx.fillText(`${dMin}`, barX + barW + 2, barY + barH);
+
+  return { ox: ox + pad.left, oy: oy + pad.top, plotW, plotH };
 }
 
 export default function SeepageDisplay({ result, params, progress }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
-
-  const hasSub = result && result.subAmplitudeMap;
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -142,64 +142,62 @@ export default function SeepageDisplay({ result, params, progress }) {
     }
 
     const { amplitudeMap, spectralSlopeMap, subAmplitudeMap, subSpectralSlopeMap, numPos, numDepthBins, depthAxis, stepSize } = result;
-    const { mode, dbFloor, dbCeil, slopeMin, slopeMax } = params;
+    const { dbFloor, dbCeil, subDbFloor, subDbCeil, slopeMin, slopeMax } = params;
 
-    const useSlope = mode === 'spectral';
-    const rawMap = useSlope ? spectralSlopeMap : amplitudeMap;
-    const dMin = useSlope ? slopeMin : dbFloor;
-    const dMax = useSlope ? slopeMax : dbCeil;
-    const modeLabel = useSlope ? 'SPECTRAL SLOPE' : 'AMPLITUDE';
+    const hasSub = !!subAmplitudeMap;
+    const gap = 8;
 
-    if (!subAmplitudeMap) {
-      // Single view (no reference)
-      const pad = { top: 32, bottom: 40, left: 52, right: 36 };
-      const plotW = w - pad.left - pad.right;
-      const plotH = h - pad.top - pad.bottom;
+    const panels = [];
 
-      drawHeatmap(ctx, pad.left, pad.top, plotW, plotH, rawMap, numPos, numDepthBins, dMin, dMax);
-      drawAxesAndGrid(ctx, pad, plotW, plotH, w, h, numPos, numDepthBins, depthAxis, stepSize, params, useSlope, dMin, dMax, `RAW — ${modeLabel}`);
+    if (hasSub) {
+      // 2x2 grid
+      const cellW = (w - gap) / 2;
+      const cellH = (h - gap) / 2;
 
-      // Crosshair
-      if (crosshair) {
-        drawCrosshair(ctx, crosshair, pad, plotW, plotH, rawMap, numPos, numDepthBins, depthAxis, stepSize, dMin, dMax, useSlope, w, h);
-      }
+      panels.push({ ox: 0, oy: 0, pw: cellW, ph: cellH, map: amplitudeMap, dMin: dbFloor, dMax: dbCeil, title: 'RAW AMPLITUDE', unit: 'dB' });
+      panels.push({ ox: cellW + gap, oy: 0, pw: cellW, ph: cellH, map: spectralSlopeMap, dMin: slopeMin, dMax: slopeMax, title: 'RAW SPECTRAL SLOPE', unit: 'dB slope' });
+      panels.push({ ox: 0, oy: cellH + gap, pw: cellW, ph: cellH, map: subAmplitudeMap, dMin: subDbFloor, dMax: subDbCeil, title: 'REF SUB — AMPLITUDE', unit: 'dB' });
+      panels.push({ ox: cellW + gap, oy: cellH + gap, pw: cellW, ph: cellH, map: subSpectralSlopeMap, dMin: slopeMin, dMax: slopeMax, title: 'REF SUB — SPECTRAL', unit: 'dB slope' });
     } else {
-      // Split view: left = raw, right = subtracted
-      const gap = 16;
-      const halfW = (w - gap) / 2;
+      // Side by side (no reference)
+      const cellW = (w - gap) / 2;
 
-      // Left: raw
-      const padL = { top: 32, bottom: 40, left: 52, right: 28 };
-      const plotWL = halfW - padL.left - padL.right;
-      const plotHL = h - padL.top - padL.bottom;
+      panels.push({ ox: 0, oy: 0, pw: cellW, ph: h, map: amplitudeMap, dMin: dbFloor, dMax: dbCeil, title: 'AMPLITUDE', unit: 'dB' });
+      panels.push({ ox: cellW + gap, oy: 0, pw: cellW, ph: h, map: spectralSlopeMap, dMin: slopeMin, dMax: slopeMax, title: 'SPECTRAL SLOPE', unit: 'dB slope' });
+    }
 
-      drawHeatmap(ctx, padL.left, padL.top, plotWL, plotHL, rawMap, numPos, numDepthBins, dMin, dMax);
-      drawAxesAndGrid(ctx, padL, plotWL, plotHL, halfW, h, numPos, numDepthBins, depthAxis, stepSize, params, useSlope, dMin, dMax, `RAW — ${modeLabel}`);
+    const panelBounds = [];
+    for (const p of panels) {
+      const bounds = drawPanel(ctx, p.ox, p.oy, p.pw, p.ph, p.map, numPos, numDepthBins, depthAxis, stepSize, p.dMin, p.dMax, p.title, p.unit);
+      panelBounds.push({ ...bounds, map: p.map, dMin: p.dMin, dMax: p.dMax, unit: p.unit });
+    }
 
-      // Divider
-      ctx.strokeStyle = '#222222';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(halfW + gap / 2, 8);
-      ctx.lineTo(halfW + gap / 2, h - 8);
-      ctx.stroke();
+    // Crosshair
+    if (crosshair) {
+      for (const b of panelBounds) {
+        const relX = (crosshair.x - b.ox) / b.plotW;
+        const relY = (crosshair.y - b.oy) / b.plotH;
+        if (relX >= 0 && relX <= 1 && relY >= 0 && relY <= 1) {
+          const xi = Math.min(numPos - 1, Math.floor(relX * numPos));
+          const yi = Math.min(numDepthBins - 1, Math.floor(relY * numDepthBins));
+          const positionCm = xi * stepSize;
+          const depthCm = depthAxis[yi];
+          const val = b.map[xi * numDepthBins + yi];
 
-      // Right: subtracted
-      const subMap = useSlope ? subSpectralSlopeMap : subAmplitudeMap;
-      const padR = { top: 32, bottom: 40, left: halfW + gap + 12, right: 36 };
-      const plotWR = w - padR.left - padR.right;
-      const plotHR = h - padR.top - padR.bottom;
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = '#ffffff44';
+          ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.moveTo(crosshair.x, b.oy); ctx.lineTo(crosshair.x, b.oy + b.plotH); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(b.ox, crosshair.y); ctx.lineTo(b.ox + b.plotW, crosshair.y); ctx.stroke();
+          ctx.setLineDash([]);
 
-      drawHeatmap(ctx, padR.left, padR.top, plotWR, plotHR, subMap, numPos, numDepthBins, dMin, dMax);
-      drawAxesAndGrid(ctx, padR, plotWR, plotHR, w, h, numPos, numDepthBins, depthAxis, stepSize, params, useSlope, dMin, dMax, `REF SUBTRACTED — ${modeLabel}`);
-
-      // Crosshair on whichever side the mouse is on
-      if (crosshair) {
-        if (crosshair.x < halfW) {
-          drawCrosshair(ctx, crosshair, padL, plotWL, plotHL, rawMap, numPos, numDepthBins, depthAxis, stepSize, dMin, dMax, useSlope, halfW, h);
-        } else {
-          const adjusted = { x: crosshair.x, y: crosshair.y };
-          drawCrosshair(ctx, adjusted, padR, plotWR, plotHR, subMap, numPos, numDepthBins, depthAxis, stepSize, dMin, dMax, useSlope, w, h);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          const label = `${positionCm.toFixed(0)}cm, ${depthCm.toFixed(1)}cm, ${val.toFixed(1)} ${b.unit}`;
+          const labelX = crosshair.x + 10 > b.ox + b.plotW - 160 ? crosshair.x - 160 : crosshair.x + 10;
+          ctx.fillText(label, labelX, crosshair.y - 8);
+          break;
         }
       }
     }
@@ -229,31 +227,4 @@ export default function SeepageDisplay({ result, params, progress }) {
       </div>
     </div>
   );
-}
-
-function drawCrosshair(ctx, crosshair, pad, plotW, plotH, dataMap, numPos, numDepthBins, depthAxis, stepSize, dMin, dMax, useSlope, maxX, h) {
-  const relX = (crosshair.x - pad.left) / plotW;
-  const relY = (crosshair.y - pad.top) / plotH;
-  if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return;
-
-  const xi = Math.min(numPos - 1, Math.floor(relX * numPos));
-  const yi = Math.min(numDepthBins - 1, Math.floor(relY * numDepthBins));
-  const positionCm = xi * stepSize;
-  const depthCm = depthAxis[yi];
-  const val = dataMap[xi * numDepthBins + yi];
-
-  ctx.setLineDash([3, 3]);
-  ctx.strokeStyle = '#ffffff44';
-  ctx.lineWidth = 0.5;
-  ctx.beginPath(); ctx.moveTo(crosshair.x, pad.top); ctx.lineTo(crosshair.x, pad.top + plotH); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(pad.left, crosshair.y); ctx.lineTo(pad.left + plotW, crosshair.y); ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '10px monospace';
-  ctx.textAlign = 'left';
-  const unit = useSlope ? 'dB slope' : 'dB';
-  const label = `${positionCm.toFixed(0)}cm, ${depthCm.toFixed(1)}cm deep, ${val.toFixed(1)} ${unit}`;
-  const labelX = crosshair.x + 10 > maxX - 180 ? crosshair.x - 180 : crosshair.x + 10;
-  ctx.fillText(label, labelX, crosshair.y - 8);
 }

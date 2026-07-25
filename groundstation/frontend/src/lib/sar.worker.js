@@ -122,6 +122,104 @@ function buildWindow(numFreqs, type) {
   return win;
 }
 
+function computeOpticalPath(lateral, depth, antennaX, wallEnabled, wallStandoffM, wallThicknessM, sqrtEr) {
+  const dx = lateral - antennaX;
+  if (!wallEnabled) {
+    return 2 * Math.sqrt(dx * dx + depth * depth);
+  }
+
+  const wallFront = wallStandoffM;
+  const wallBack = wallStandoffM + wallThicknessM;
+  const er = sqrtEr * sqrtEr;
+
+  if (depth <= wallFront) {
+    return 2 * Math.sqrt(dx * dx + depth * depth);
+  }
+
+  const absDx = Math.abs(dx);
+
+  if (absDx < 1e-9) {
+    if (depth <= wallBack) {
+      return 2 * (wallFront + (depth - wallFront) * sqrtEr);
+    }
+    return 2 * (wallFront + wallThicknessM * sqrtEr + (depth - wallBack));
+  }
+
+  // Snell's law ray tracing: find refraction point at wall surface
+  // For target inside wall (depth <= wallBack):
+  //   Minimize optical path: air segment + wall segment
+  //   f(x) = sqrt(x^2 + wallFront^2) + sqrtEr * sqrt((absDx-x)^2 + (depth-wallFront)^2)
+  //   f'(x) = x/r_air - sqrtEr*(absDx-x)/r_wall = 0  (Snell's law)
+  // For target behind wall:
+  //   Three segments: air → wall → air behind wall
+  //   Two refraction points (entry & exit). Use iterative solver.
+
+  if (depth <= wallBack) {
+    const dWall = depth - wallFront;
+    // Newton's method to find entry point x on wall front surface
+    let x = absDx * wallFront / depth; // initial guess (straight-line)
+    for (let iter = 0; iter < 8; iter++) {
+      const rAir = Math.sqrt(x * x + wallFront * wallFront);
+      const rem = absDx - x;
+      const rWall = Math.sqrt(rem * rem + dWall * dWall);
+      const f = x / rAir - sqrtEr * rem / rWall;
+      const df = (wallFront * wallFront) / (rAir * rAir * rAir) + sqrtEr * (dWall * dWall) / (rWall * rWall * rWall);
+      x -= f / df;
+      if (x < 0) x = 0;
+      if (x > absDx) x = absDx;
+    }
+    const rAir = Math.sqrt(x * x + wallFront * wallFront);
+    const rWall = Math.sqrt((absDx - x) * (absDx - x) + dWall * dWall);
+    return 2 * (rAir + sqrtEr * rWall);
+  }
+
+  // Target behind wall: two refraction points
+  const dWall = wallThicknessM;
+  const dBehind = depth - wallBack;
+
+  // Solve for entry point x1 and exit point x2
+  // Total lateral: x1 (in air front) + x2 (in wall) + x3 (in air behind) = absDx
+  // Snell at entry: sin(theta_air)/1 = sin(theta_wall)/sqrtEr... actually n*sin = const
+  // n_air * sin(theta1) = n_wall * sin(theta2) = n_air * sin(theta3)
+  // So theta1 = theta3 (same medium), and sin(theta2) = sin(theta1)/sqrtEr
+  // Single unknown: theta1. Lateral constraint: wallFront*tan(t1) + dWall*tan(t2) + dBehind*tan(t1) = absDx
+  // where sin(t2) = sin(t1)/sqrtEr
+
+  // Newton on theta1
+  let sinT1 = absDx / Math.sqrt(absDx * absDx + depth * depth); // initial guess
+  if (sinT1 > 0.999) sinT1 = 0.999;
+
+  for (let iter = 0; iter < 12; iter++) {
+    const cosT1 = Math.sqrt(1 - sinT1 * sinT1);
+    const tanT1 = sinT1 / cosT1;
+    const sinT2 = sinT1 / sqrtEr;
+    if (sinT2 >= 1) { sinT1 *= 0.9; continue; } // total internal reflection guard
+    const cosT2 = Math.sqrt(1 - sinT2 * sinT2);
+    const tanT2 = sinT2 / cosT2;
+
+    const lateralUsed = (wallFront + dBehind) * tanT1 + dWall * tanT2;
+    const residual = lateralUsed - absDx;
+
+    // Derivative of lateralUsed w.r.t. sinT1
+    const dTanT1_dSin = 1 / (cosT1 * cosT1 * cosT1);
+    const dSinT2_dSin = 1 / sqrtEr;
+    const dTanT2_dSin = dSinT2_dSin / (cosT2 * cosT2 * cosT2);
+    const dLateral = (wallFront + dBehind) * dTanT1_dSin + dWall * dTanT2_dSin;
+
+    sinT1 -= residual / dLateral;
+    if (sinT1 < 0) sinT1 = 0;
+    if (sinT1 > 0.999) sinT1 = 0.999;
+  }
+
+  const cosT1 = Math.sqrt(1 - sinT1 * sinT1);
+  const sinT2 = sinT1 / sqrtEr;
+  const cosT2 = Math.sqrt(1 - sinT2 * sinT2);
+
+  const airPath = (wallFront + dBehind) / cosT1;
+  const wallPath = dWall / cosT2;
+  return 2 * (airPath + sqrtEr * wallPath);
+}
+
 self.onmessage = function (e) {
   const { bscanData, bscanParams, sarParams } = e.data;
   const t0 = performance.now();
@@ -130,6 +228,7 @@ self.onmessage = function (e) {
   const {
     pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax,
     meanSubtract, svdEnabled, svdK, window: windowType,
+    wallEnabled, wallStandoff, wallThickness, wallPermittivity,
   } = sarParams;
 
   const numPositions = bscanData.length;
@@ -148,6 +247,10 @@ self.onmessage = function (e) {
 
   const latMin = lateralMin !== undefined && lateralMin !== null ? lateralMin : 0;
   const latMax = lateralMax !== undefined && lateralMax !== null ? lateralMax : apertureLength;
+
+  const wallStandoffM = (wallStandoff || 5) / 100;
+  const wallThicknessM = (wallThickness || 15) / 100;
+  const sqrtEr = Math.sqrt(wallPermittivity || 4.5);
 
   const image = new Float64Array(pixelsX * pixelsZ);
 
@@ -211,8 +314,7 @@ self.onmessage = function (e) {
         let sumIm = 0;
 
         for (let p = 0; p < numPositions; p++) {
-          const dx = lateral - antennaX[p];
-          const roundTrip = 2 * Math.sqrt(dx * dx + depth * depth);
+          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallEnabled, wallStandoffM, wallThicknessM, sqrtEr);
 
           for (let f = 0; f < numFreqs; f++) {
             const phase = k[f] * roundTrip;
@@ -270,8 +372,7 @@ self.onmessage = function (e) {
 
         let sum = 0;
         for (let p = 0; p < numPositions; p++) {
-          const dx = lateral - antennaX[p];
-          const roundTrip = Math.sqrt(dx * dx + depth * depth);
+          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallEnabled, wallStandoffM, wallThicknessM, sqrtEr) / 2;
 
           const binFloat = (roundTrip - distStart) / distStep;
           const binIdx = Math.floor(binFloat);

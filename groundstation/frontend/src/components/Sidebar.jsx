@@ -10,11 +10,11 @@ import SarPanel from './SarPanel';
 import SeepagePanel from './SeepagePanel';
 
 const PANELS = [
-  { id: 'hwcal',     label: 'HW Cal',    icon: Wrench,    accent: '#A78BFA', accentTo: '#C4B5FD' },
+  { id: 'hwcal',     label: 'HW Calib & Test', icon: Wrench, accent: '#A78BFA', accentTo: '#C4B5FD' },
   { id: 'imu',       label: 'IMU',       icon: Activity,  accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye,       accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio,  accent: '#D1855C', accentTo: '#E5A986' },
-  { id: 'sfcw',      label: 'SFCW',      icon: Radar,     accent: '#D1855C', accentTo: '#E5A986' },
+  { id: 'sfcw',      label: 'Sweep',     icon: Radar,     accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine,  accent: '#D1855C', accentTo: '#E5A986' },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3,   accent: '#4ade80', accentTo: '#86efac' },
   { id: 'seepage',   label: 'Seepage',   icon: Droplets,  accent: '#38bdf8', accentTo: '#7dd3fc' },
@@ -49,6 +49,9 @@ export default function Sidebar({
   sfcwParams,
   onSfcwParamsChange,
   sfcwResult,
+  sweepMode,
+  fmcwParams,
+  onFmcwParamsChange,
   bscanData,
   bscanCapturing,
   bscanBgCaptured,
@@ -218,6 +221,9 @@ export default function Sidebar({
                   sendSdr={sendSdr}
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
+                  sweepMode={sweepMode}
+                  fmcwParams={fmcwParams}
+                  onFmcwParamsChange={onFmcwParamsChange}
                 />
               )}
               {activePanel === 'bscan' && (

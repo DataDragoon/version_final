@@ -320,19 +320,13 @@ class FMCWEngine:
         num_sub = int(np.ceil((stop - start) / sub_step))
         samples_per_chirp = int(chirp_dur * self.driver.sample_rate)
 
-        # Generate the baseband chirp reference (same for all sub-bands)
-        chirp_ref = self._generate_chirp_iq(samples_per_chirp)
-
-        # Storage for de-chirped beat signals per sub-band
         beat_signal = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
-        beat_ref = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
-        # Dynamic RX gain ramp across sub-bands (same logic as SFCW)
         center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
         freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
         rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
@@ -344,20 +338,17 @@ class FMCWEngine:
             center = int(center_freqs[i])
             g = int(rx_gains[i])
 
-            # Retune LO to sub-band center
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, center)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, center)
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
 
-            # Wait for PLL to settle
             time.sleep(pll_settle)
 
             # Discard first buffer (PLL transient)
             self._rx_event.clear()
             self._rx_event.wait(timeout=1.0)
 
-            # Collect and average multiple chirps
             sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
             ref_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
             captured = 0
@@ -371,37 +362,25 @@ class FMCWEngine:
                 if rx1 is None or rx2 is None:
                     continue
 
-                # Convert to complex float
                 i1 = rx1[0::2].astype(np.float64) / 2047.0
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
-                rx1_complex = i1 + 1j * q1
-
                 i2 = rx2[0::2].astype(np.float64) / 2047.0
                 q2 = rx2[1::2].astype(np.float64) / 2047.0
-                rx2_complex = i2 + 1j * q2
 
-                # Trim or pad to chirp length
-                n_rx = min(len(rx1_complex), samples_per_chirp)
-                sig_accum[:n_rx] += rx1_complex[:n_rx]
-                ref_accum[:n_rx] += rx2_complex[:n_rx]
+                n_rx = min(len(i1), samples_per_chirp)
+                sig_accum[:n_rx] += (i1[:n_rx] + 1j * q1[:n_rx])
+                ref_accum[:n_rx] += (i2[:n_rx] + 1j * q2[:n_rx])
                 captured += 1
 
             if captured > 0:
                 sig_accum /= captured
                 ref_accum /= captured
 
-            # De-chirp: multiply received signal by conjugate of reference chirp
-            # This is the digital equivalent of analog stretch processing
-            beat_scene = sig_accum * np.conj(chirp_ref[:samples_per_chirp])
-            beat_cable = ref_accum * np.conj(chirp_ref[:samples_per_chirp])
-
-            # Store in the full stitched array
+            # De-chirp: RX1 * conj(RX2) — TX/RX timing offset cancels
             idx_start = i * samples_per_chirp
             idx_end = idx_start + samples_per_chirp
-            beat_signal[idx_start:idx_end] = beat_scene
-            beat_ref[idx_start:idx_end] = beat_cable
+            beat_signal[idx_start:idx_end] = sig_accum * np.conj(ref_accum)
 
-            # Progress callback
             if self._callback and i % 5 == 0:
                 self._callback({
                     'type': 'progress',
@@ -410,31 +389,17 @@ class FMCWEngine:
                     'freq_mhz': center / 1e6,
                 })
 
-        # --- Phase stitching correction using cable reference ---
-        # The cable reference has known, constant delay. Any phase discontinuity
-        # at sub-band boundaries in the reference is purely system error.
+        # --- Phase stitching correction at sub-band boundaries ---
         for i in range(1, num_sub):
             boundary = i * samples_per_chirp
-            # Phase at end of previous sub-band's reference beat
-            phi_prev = np.angle(beat_ref[boundary - 1])
-            # Phase at start of current sub-band's reference beat
-            phi_curr = np.angle(beat_ref[boundary])
-            # The error is any jump that the cable reference shows
-            phi_err = phi_curr - phi_prev
-            # Apply correction to both signal and reference from this point forward
-            correction = np.exp(-1j * phi_err)
-            beat_signal[boundary:] *= correction
-            beat_ref[boundary:] *= correction
+            phi_prev = np.angle(beat_signal[boundary - 1])
+            phi_curr = np.angle(beat_signal[boundary])
+            phi_err = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
+            beat_signal[boundary:] *= np.exp(-1j * phi_err)
 
-        # --- Phase-reference division (removes residual system phase) ---
-        ref_mag = np.abs(beat_ref)
-        valid = ref_mag > np.max(ref_mag) * 0.01
-        h_cal = np.zeros(len(beat_signal), dtype=np.complex128)
-        h_cal[valid] = beat_signal[valid] / beat_ref[valid]
+        # The stitched beat signal IS the channel transfer function H(f)
+        h_cal = beat_signal
 
-        # --- Construct equivalent frequency-domain representation ---
-        # The stitched beat signal represents the transfer function H(f)
-        # across the full synthetic bandwidth
         total_points = num_sub * samples_per_chirp
         freqs = np.linspace(start, stop, total_points)
 
@@ -570,7 +535,18 @@ class FMCWEngine:
             self.running = False
 
     def _capture_single_sweep(self):
-        """Helper: perform one complete FMCW sweep and return raw beat signals."""
+        """Helper: perform one complete FMCW sweep and return de-chirped beat signals.
+
+        De-chirp is done by mixing RX1 (scene) against RX2 (cable reference from TX2).
+        This eliminates TX/RX buffer timing offset since both channels share the same
+        capture clock. RX2 raw phase is preserved separately for sub-band stitching.
+
+        Returns: (beat_signal, ref_phase, samples_per_chirp, num_sub)
+          - beat_signal: RX1 * conj(RX2) per sub-band, concatenated
+          - ref_phase: raw RX2 phase at each sub-band boundary (for stitching)
+          - samples_per_chirp: samples in one sub-band
+          - num_sub: number of sub-bands
+        """
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -583,10 +559,9 @@ class FMCWEngine:
         sub_step = int(sub_bw * (1.0 - overlap))
         num_sub = int(np.ceil((stop - start) / sub_step))
         samples_per_chirp = int(chirp_dur * self.driver.sample_rate)
-        chirp_ref = self._generate_chirp_iq(samples_per_chirp)
 
         beat_signal = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
-        beat_ref = np.zeros(num_sub * samples_per_chirp, dtype=np.complex128)
+        ref_phase = np.zeros(num_sub, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
@@ -596,8 +571,6 @@ class FMCWEngine:
         center_freqs = np.array([start + sub_bw // 2 + i * sub_step for i in range(num_sub)])
         freq_norm = (center_freqs - center_freqs[0]) / max(float(center_freqs[-1] - center_freqs[0]), 1)
         rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
-
-        # TX is already running from _start_tx_rx
 
         for i in range(num_sub):
             if self._stop_event.is_set():
@@ -640,8 +613,10 @@ class FMCWEngine:
 
             idx_start = i * samples_per_chirp
             idx_end = idx_start + samples_per_chirp
-            beat_signal[idx_start:idx_end] = sig_accum * np.conj(chirp_ref)
-            beat_ref[idx_start:idx_end] = ref_accum * np.conj(chirp_ref)
+            # De-chirp: RX1 * conj(RX2) — timing offset cancels
+            beat_signal[idx_start:idx_end] = sig_accum * np.conj(ref_accum)
+            # Store reference phase at sub-band midpoint for stitching
+            ref_phase[i] = ref_accum[samples_per_chirp // 2]
 
             if self._callback and i % 5 == 0:
                 self._callback({
@@ -651,25 +626,24 @@ class FMCWEngine:
                     'freq_mhz': center / 1e6,
                 })
 
-        return beat_signal, beat_ref, samples_per_chirp, num_sub
+        return beat_signal, ref_phase, samples_per_chirp, num_sub
 
     def _test_linearity(self):
         """Test chirp linearity via cable-through.
 
-        Measures residual phase error after de-chirp on the cable reference.
-        A perfect chirp + perfect cable → pure single-tone beat → linear phase.
-        Deviation from linear = chirp non-linearity + filter distortion.
+        With RX1*conj(RX2) de-chirp, a cable-through setup (same chirp on both
+        paths) should produce a near-DC beat per sub-band — any differential path
+        length gives a constant beat frequency. Deviation from linear phase within
+        each sub-band = chirp non-linearity or filter distortion.
         """
-        beat_signal, beat_ref, spc, num_sub = self._capture_single_sweep()
-        if beat_ref is None:
+        beat_signal, ref_phase, spc, num_sub = self._capture_single_sweep()
+        if beat_signal is None:
             return None
 
-        # Analyze each sub-band independently
         linearity_results = []
         for i in range(num_sub):
-            segment = beat_ref[i * spc:(i + 1) * spc]
+            segment = beat_signal[i * spc:(i + 1) * spc]
             phase = np.unwrap(np.angle(segment))
-            # Fit linear model
             t = np.arange(spc, dtype=np.float64)
             coeffs = np.polyfit(t, phase, 1)
             residual = phase - np.polyval(coeffs, t)
@@ -690,7 +664,7 @@ class FMCWEngine:
         return {
             'type': 'fmcw_test_result',
             'test': 'linearity',
-            'pass': overall_rms < 5.0,  # <5° RMS is acceptable
+            'pass': overall_rms < 5.0,
             'overall_rms_deg': round(overall_rms, 4),
             'overall_peak_deg': round(overall_peak, 4),
             'threshold_deg': 5.0,
@@ -702,84 +676,57 @@ class FMCWEngine:
     def _test_stitching(self):
         """Test sub-band stitching quality.
 
-        Measures: boundary phase jumps before/after correction, ghost peak level
-        (PSLR at ±c/(2·sub_bw) multiples), and main lobe width.
+        With beat_signal = RX1*conj(RX2), phase jumps at sub-band boundaries
+        in beat_signal directly reveal PLL settling errors. We measure before/after
+        correction and compute PSLR from the range profile.
         """
-        beat_signal, beat_ref, spc, num_sub = self._capture_single_sweep()
-        if beat_ref is None:
+        beat_signal, ref_phase, spc, num_sub = self._capture_single_sweep()
+        if beat_signal is None:
             return None
 
         # Measure boundary phase jumps BEFORE correction
         jumps_before = []
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_prev = np.angle(beat_ref[boundary - 1])
-            phi_curr = np.angle(beat_ref[boundary])
-            jump = phi_curr - phi_prev
-            # Wrap to [-π, π]
-            jump = (jump + np.pi) % (2 * np.pi) - np.pi
+            phi_prev = np.angle(beat_signal[boundary - 1])
+            phi_curr = np.angle(beat_signal[boundary])
+            jump = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
             jumps_before.append(float(jump))
 
-        # Apply stitching correction
-        beat_signal_corrected = beat_signal.copy()
-        beat_ref_corrected = beat_ref.copy()
+        # Apply stitching correction using beat_signal boundaries directly
+        beat_corrected = beat_signal.copy()
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_prev = np.angle(beat_ref_corrected[boundary - 1])
-            phi_curr = np.angle(beat_ref_corrected[boundary])
-            phi_err = phi_curr - phi_prev
-            phi_err = (phi_err + np.pi) % (2 * np.pi) - np.pi
-            correction = np.exp(-1j * phi_err)
-            beat_signal_corrected[boundary:] *= correction
-            beat_ref_corrected[boundary:] *= correction
+            phi_prev = np.angle(beat_corrected[boundary - 1])
+            phi_curr = np.angle(beat_corrected[boundary])
+            phi_err = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
+            beat_corrected[boundary:] *= np.exp(-1j * phi_err)
 
         # Measure boundary phase jumps AFTER correction
         jumps_after = []
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_prev = np.angle(beat_ref_corrected[boundary - 1])
-            phi_curr = np.angle(beat_ref_corrected[boundary])
-            jump = phi_curr - phi_prev
-            jump = (jump + np.pi) % (2 * np.pi) - np.pi
+            phi_prev = np.angle(beat_corrected[boundary - 1])
+            phi_curr = np.angle(beat_corrected[boundary])
+            jump = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
             jumps_after.append(float(jump))
 
-        # Range profile of corrected signal (cable-through → single peak)
-        ref_mag = np.abs(beat_ref_corrected)
-        valid = ref_mag > np.max(ref_mag) * 0.01
-        h_cal = np.zeros(len(beat_signal_corrected), dtype=np.complex128)
-        h_cal[valid] = beat_signal_corrected[valid] / beat_ref_corrected[valid]
-
-        window = np.hanning(len(h_cal))
-        profile = np.abs(np.fft.ifft(h_cal * window))
+        # Range profile (cable-through → single peak expected)
+        window = np.hanning(len(beat_corrected))
+        profile = np.abs(np.fft.ifft(beat_corrected * window))
         profile_db = 20 * np.log10(profile / (np.max(profile) + 1e-12) + 1e-12)
 
-        # Find main peak and sidelobes
         peak_idx = np.argmax(profile)
-        peak_val_db = 0.0  # normalized to 0 dB
 
-        # Ghost peak locations: at multiples of c/(2·sub_bw) in range bins
-        total_points = len(profile)
-        total_bw = self.stop_freq - self.start_freq
-        range_per_bin = SPEED_OF_LIGHT / (2 * total_bw) * total_points / total_points
-        ghost_range = SPEED_OF_LIGHT / (2 * self.sub_band_bw)
-        ghost_bin = int(ghost_range / (SPEED_OF_LIGHT / (2 * total_bw / total_points * total_points)))
-
-        # PSLR: ratio of highest sidelobe to main peak
-        # Exclude ±5 bins around main peak
+        # PSLR: highest sidelobe relative to main peak (exclude ±5 bins)
         mask = np.ones(len(profile_db), dtype=bool)
         mask[max(0, peak_idx - 5):min(len(mask), peak_idx + 6)] = False
-        if np.any(mask):
-            pslr = float(np.max(profile_db[mask]))
-        else:
-            pslr = -100.0
+        pslr = float(np.max(profile_db[mask])) if np.any(mask) else -100.0
 
         # Main lobe -3dB width
         half_profile = profile_db[:len(profile_db) // 2]
         above_3db = np.where(half_profile > -3.0)[0]
-        if len(above_3db) > 1:
-            lobe_width_bins = int(above_3db[-1] - above_3db[0])
-        else:
-            lobe_width_bins = 1
+        lobe_width_bins = int(above_3db[-1] - above_3db[0]) if len(above_3db) > 1 else 1
 
         rms_before = float(np.sqrt(np.mean(np.array(jumps_before)**2)))
         rms_after = float(np.sqrt(np.mean(np.array(jumps_after)**2)))
@@ -802,51 +749,35 @@ class FMCWEngine:
     def _test_repeatability(self):
         """Test sweep-to-sweep repeatability.
 
-        Runs two back-to-back sweeps and measures the residual difference.
-        Bad stitching is non-deterministic (PLL settling varies), so low
-        repeatability indicates stitching correction isn't working.
+        Runs two back-to-back sweeps, applies boundary stitching to each,
+        then compares. Non-deterministic PLL settling → low repeatability.
         """
-        # First sweep
-        beat_sig1, beat_ref1, spc, num_sub = self._capture_single_sweep()
+        beat_sig1, _, spc, num_sub = self._capture_single_sweep()
         if beat_sig1 is None:
             return None
 
         # Apply stitching to first sweep
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_err = np.angle(beat_ref1[boundary]) - np.angle(beat_ref1[boundary - 1])
+            phi_err = np.angle(beat_sig1[boundary]) - np.angle(beat_sig1[boundary - 1])
             phi_err = (phi_err + np.pi) % (2 * np.pi) - np.pi
             beat_sig1[boundary:] *= np.exp(-1j * phi_err)
-            beat_ref1[boundary:] *= np.exp(-1j * phi_err)
 
-        # Second sweep (TX already running)
-        beat_sig2, beat_ref2, _, _ = self._capture_single_sweep()
+        # Second sweep
+        beat_sig2, _, _, _ = self._capture_single_sweep()
         if beat_sig2 is None:
             return None
 
-        # Apply stitching to second sweep
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_err = np.angle(beat_ref2[boundary]) - np.angle(beat_ref2[boundary - 1])
+            phi_err = np.angle(beat_sig2[boundary]) - np.angle(beat_sig2[boundary - 1])
             phi_err = (phi_err + np.pi) % (2 * np.pi) - np.pi
             beat_sig2[boundary:] *= np.exp(-1j * phi_err)
-            beat_ref2[boundary:] *= np.exp(-1j * phi_err)
-
-        # Phase-reference division for both
-        ref_mag1 = np.abs(beat_ref1)
-        valid1 = ref_mag1 > np.max(ref_mag1) * 0.01
-        h1 = np.zeros(len(beat_sig1), dtype=np.complex128)
-        h1[valid1] = beat_sig1[valid1] / beat_ref1[valid1]
-
-        ref_mag2 = np.abs(beat_ref2)
-        valid2 = ref_mag2 > np.max(ref_mag2) * 0.01
-        h2 = np.zeros(len(beat_sig2), dtype=np.complex128)
-        h2[valid2] = beat_sig2[valid2] / beat_ref2[valid2]
 
         # Range profiles
-        window = np.hanning(len(h1))
-        p1 = np.fft.ifft(h1 * window)
-        p2 = np.fft.ifft(h2 * window)
+        window = np.hanning(len(beat_sig1))
+        p1 = np.fft.ifft(beat_sig1 * window)
+        p2 = np.fft.ifft(beat_sig2 * window)
 
         # Correlation
         correlation = float(np.abs(np.vdot(p1, p2))**2 / (np.vdot(p1, p1) * np.vdot(p2, p2)).real)
@@ -871,42 +802,38 @@ class FMCWEngine:
     def _test_phase_residual(self):
         """Measure phase residual across stitched bandwidth on cable reference.
 
-        The cable has linear phase vs frequency. After stitching, any deviation
-        from linear indicates residual errors. This is the most direct measure
-        of overall synthetic bandwidth quality.
+        With beat_signal = RX1*conj(RX2), on a cable-through the beat phase should
+        be linear (constant differential delay). After boundary stitching, any
+        deviation from linear = residual system errors.
         """
-        beat_signal, beat_ref, spc, num_sub = self._capture_single_sweep()
-        if beat_ref is None:
+        beat_signal, ref_phase, spc, num_sub = self._capture_single_sweep()
+        if beat_signal is None:
             return None
 
-        # Apply stitching
+        # Apply boundary stitching
         for i in range(1, num_sub):
             boundary = i * spc
-            phi_err = np.angle(beat_ref[boundary]) - np.angle(beat_ref[boundary - 1])
+            phi_err = np.angle(beat_signal[boundary]) - np.angle(beat_signal[boundary - 1])
             phi_err = (phi_err + np.pi) % (2 * np.pi) - np.pi
             beat_signal[boundary:] *= np.exp(-1j * phi_err)
-            beat_ref[boundary:] *= np.exp(-1j * phi_err)
-
-        # Phase-reference division
-        ref_mag = np.abs(beat_ref)
-        valid = ref_mag > np.max(ref_mag) * 0.01
-        h_cal = np.zeros(len(beat_signal), dtype=np.complex128)
-        h_cal[valid] = beat_signal[valid] / beat_ref[valid]
 
         # Full phase across stitched bandwidth
-        phase = np.unwrap(np.angle(h_cal[valid]))
-        indices = np.where(valid)[0].astype(np.float64)
+        phase = np.unwrap(np.angle(beat_signal))
+        indices = np.arange(len(phase), dtype=np.float64)
 
-        # Linear fit
-        coeffs = np.polyfit(indices, phase, 1)
-        residual = phase - np.polyval(coeffs, indices)
+        # Linear fit (subsample for speed)
+        subset_step = max(1, len(phase) // 2000)
+        idx_sub = indices[::subset_step]
+        phase_sub = phase[::subset_step]
+        coeffs = np.polyfit(idx_sub, phase_sub, 1)
+        residual_full = phase - np.polyval(coeffs, indices)
 
-        rms_residual = float(np.sqrt(np.mean(residual**2)))
-        peak_residual = float(np.max(np.abs(residual)))
+        rms_residual = float(np.sqrt(np.mean(residual_full**2)))
+        peak_residual = float(np.max(np.abs(residual_full)))
 
         # Downsample residual for transport
-        step = max(1, len(residual) // 500)
-        residual_plot = residual[::step]
+        step = max(1, len(residual_full) // 500)
+        residual_plot = residual_full[::step]
 
         # Estimate cable delay from phase slope
         total_bw = self.stop_freq - self.start_freq

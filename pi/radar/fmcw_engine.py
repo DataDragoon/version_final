@@ -36,7 +36,7 @@ class FMCWEngine:
         self.start_freq = 1_000_000_000
         self.stop_freq = 6_000_000_000
         # FMCW-specific parameters
-        self.sub_band_bw = 20_000_000       # 20 MHz per chirp
+        self.sub_band_bw = 25_000_000       # 25 MHz per chirp
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 8             # chirps to average per sub-band

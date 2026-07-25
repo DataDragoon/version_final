@@ -49,6 +49,8 @@ class FMCWEngine:
         self.rx_gain_min = 5
         self.rx_gain_max = 38
         self.range_offset = 0.55
+        # Discard buffers after PLL hop (extra buffers beyond the mandatory 1)
+        self.discard_buffers = 0
         # State
         self.running = False
         self._stop_event = threading.Event()
@@ -64,6 +66,9 @@ class FMCWEngine:
         self._mean_accumulator = None
         self._mean_count = 0
         self._mean_subtraction_enabled = False
+        # Channel calibration: differential transfer function between RX paths
+        self._channel_cal = None
+        self._channel_cal_file = os.path.join(CALIBRATION_DIR, 'fmcw_channel_cal.npz')
 
     @property
     def effective_sub_band_step(self):
@@ -129,6 +134,8 @@ class FMCWEngine:
                 self.rx_gain_max = int(kwargs['rx_gain_max'])
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
+            if 'discard_buffers' in kwargs:
+                self.discard_buffers = max(0, int(kwargs['discard_buffers']))
 
     def get_params(self):
         return {
@@ -191,6 +198,33 @@ class FMCWEngine:
     def reset_mean(self):
         self._mean_accumulator = None
         self._mean_count = 0
+
+    def load_channel_cal(self):
+        """Load saved channel calibration from disk if available."""
+        if os.path.exists(self._channel_cal_file):
+            try:
+                data = np.load(self._channel_cal_file)
+                self._channel_cal = data['cal']
+                print(f"[fmcw] Channel calibration loaded ({len(self._channel_cal)} points)")
+            except Exception as e:
+                print(f"[fmcw] Failed to load channel cal: {e}")
+                self._channel_cal = None
+
+    def save_channel_cal(self, cal_data):
+        """Save channel calibration to disk."""
+        os.makedirs(os.path.dirname(self._channel_cal_file), exist_ok=True)
+        np.savez(self._channel_cal_file, cal=cal_data)
+        self._channel_cal = cal_data
+        print(f"[fmcw] Channel calibration saved ({len(cal_data)} points)")
+
+    def clear_channel_cal(self):
+        self._channel_cal = None
+        if os.path.exists(self._channel_cal_file):
+            os.remove(self._channel_cal_file)
+            print("[fmcw] Channel calibration cleared")
+
+    def has_channel_cal(self):
+        return self._channel_cal is not None
 
     def start(self, callback):
         if self.running:
@@ -345,9 +379,10 @@ class FMCWEngine:
 
             time.sleep(pll_settle)
 
-            # Discard first buffer (PLL transient)
-            self._rx_event.clear()
-            self._rx_event.wait(timeout=1.0)
+            # Discard buffers (1 mandatory + extra for PLL transient decay)
+            for _ in range(1 + self.discard_buffers):
+                self._rx_event.clear()
+                self._rx_event.wait(timeout=1.0)
 
             sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
             ref_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
@@ -397,7 +432,12 @@ class FMCWEngine:
             phi_err = (phi_curr - phi_prev + np.pi) % (2 * np.pi) - np.pi
             beat_signal[boundary:] *= np.exp(-1j * phi_err)
 
-        # The stitched beat signal IS the channel transfer function H(f)
+        # Apply channel calibration if available
+        if self._channel_cal is not None and len(self._channel_cal) == len(beat_signal):
+            cal_mag = np.abs(self._channel_cal)
+            valid = cal_mag > np.max(cal_mag) * 0.01
+            beat_signal[valid] /= self._channel_cal[valid]
+
         h_cal = beat_signal
 
         total_points = num_sub * samples_per_chirp
@@ -517,6 +557,10 @@ class FMCWEngine:
                 result = self._test_repeatability()
             elif test_type == 'phase_residual':
                 result = self._test_phase_residual()
+            elif test_type == 'channel_cal':
+                result = self._calibrate_channels()
+            elif test_type == 'parametric_linearity':
+                result = self._test_parametric_linearity()
             else:
                 result = {'error': f'Unknown test type: {test_type}'}
 
@@ -584,8 +628,10 @@ class FMCWEngine:
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
             time.sleep(pll_settle)
 
-            self._rx_event.clear()
-            self._rx_event.wait(timeout=1.0)
+            # Discard buffers (1 mandatory + extra for PLL transient decay)
+            for _ in range(1 + self.discard_buffers):
+                self._rx_event.clear()
+                self._rx_event.wait(timeout=1.0)
 
             sig_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
             ref_accum = np.zeros(samples_per_chirp, dtype=np.complex128)
@@ -625,6 +671,12 @@ class FMCWEngine:
                     'total': num_sub,
                     'freq_mhz': center / 1e6,
                 })
+
+        # Apply channel calibration if available (compensates differential filter response)
+        if self._channel_cal is not None and len(self._channel_cal) == len(beat_signal):
+            cal_mag = np.abs(self._channel_cal)
+            valid = cal_mag > np.max(cal_mag) * 0.01
+            beat_signal[valid] /= self._channel_cal[valid]
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
@@ -853,5 +905,152 @@ class FMCWEngine:
             'phase_slope_rad_per_sample': round(float(coeffs[0]), 8),
             'residual_plot': [round(float(r), 4) for r in residual_plot.tolist()],
             'description': 'Phase residual across full stitched bandwidth. Cable should give linear phase; deviation = system errors. <5° RMS = good.',
+            'timestamp': time.time(),
+        }
+
+    def _calibrate_channels(self):
+        """Capture differential channel transfer function for calibration.
+
+        With identical cables on both channels, RX1*conj(RX2) should be flat
+        (unit magnitude, zero phase). Any deviation is the differential analog
+        filter response between channels. We store this and divide it out of
+        future sweeps.
+        """
+        # Average multiple sweeps for a clean calibration
+        num_cal_sweeps = 4
+        cal_accum = None
+
+        for sweep_idx in range(num_cal_sweeps):
+            if self._callback:
+                self._callback({
+                    'type': 'progress',
+                    'step': sweep_idx,
+                    'total': num_cal_sweeps,
+                    'freq_mhz': 0,
+                })
+
+            beat_signal, _, spc, num_sub = self._capture_single_sweep()
+            if beat_signal is None:
+                return None
+
+            # Stitch boundaries
+            for i in range(1, num_sub):
+                boundary = i * spc
+                phi_err = np.angle(beat_signal[boundary]) - np.angle(beat_signal[boundary - 1])
+                phi_err = (phi_err + np.pi) % (2 * np.pi) - np.pi
+                beat_signal[boundary:] *= np.exp(-1j * phi_err)
+
+            if cal_accum is None:
+                cal_accum = beat_signal.copy()
+            else:
+                cal_accum += beat_signal
+
+        cal_accum /= num_cal_sweeps
+
+        # Normalize: we want the phase slope (cable delay) preserved,
+        # but amplitude variation captured. Remove the mean phase slope
+        # so calibration only corrects per-sample amplitude/phase ripple.
+        phase = np.unwrap(np.angle(cal_accum))
+        indices = np.arange(len(phase), dtype=np.float64)
+        coeffs = np.polyfit(indices[::10], phase[::10], 1)
+        # Remove linear component (cable delay) — keep only ripple
+        cal_normalized = cal_accum * np.exp(-1j * np.polyval(coeffs, indices))
+
+        self.save_channel_cal(cal_normalized)
+
+        # Compute stats for reporting
+        mag_db = 20 * np.log10(np.abs(cal_normalized) + 1e-12)
+        phase_deg = np.degrees(np.angle(cal_normalized))
+
+        return {
+            'type': 'fmcw_test_result',
+            'test': 'channel_cal',
+            'pass': True,
+            'mag_ripple_db': round(float(np.max(mag_db) - np.min(mag_db)), 2),
+            'phase_ripple_deg': round(float(np.max(phase_deg) - np.min(phase_deg)), 2),
+            'mag_std_db': round(float(np.std(mag_db)), 4),
+            'num_points': len(cal_normalized),
+            'num_sweeps_averaged': num_cal_sweeps,
+            'description': 'Channel calibration captured. Differential transfer function stored — will be applied to all future sweeps.',
+            'timestamp': time.time(),
+        }
+
+    def _test_parametric_linearity(self):
+        """Sweep through multiple parameter combinations and measure linearity.
+
+        Tests settle times and discard buffer counts to find the best config.
+        """
+        settle_times = [0.001, 0.002, 0.003, 0.005, 0.008]
+        discard_counts = [0, 1, 2]
+        avg_counts = [4, 8]
+
+        results = []
+        total_configs = len(settle_times) * len(discard_counts) * len(avg_counts)
+        config_idx = 0
+
+        original_settle = self.pll_settle_time
+        original_discard = self.discard_buffers
+        original_avg = self.num_chirps_avg
+
+        for settle in settle_times:
+            for discard in discard_counts:
+                for avg in avg_counts:
+                    if self._stop_event.is_set():
+                        break
+
+                    self.pll_settle_time = settle
+                    self.discard_buffers = discard
+                    self.num_chirps_avg = avg
+
+                    if self._callback:
+                        self._callback({
+                            'type': 'progress',
+                            'step': config_idx,
+                            'total': total_configs,
+                            'freq_mhz': settle * 1000,
+                        })
+
+                    beat_signal, _, spc, num_sub = self._capture_single_sweep()
+                    if beat_signal is None:
+                        continue
+
+                    # Measure per-sub-band linearity
+                    rms_errors = []
+                    for i in range(num_sub):
+                        segment = beat_signal[i * spc:(i + 1) * spc]
+                        phase = np.unwrap(np.angle(segment))
+                        t = np.arange(spc, dtype=np.float64)
+                        coeffs = np.polyfit(t, phase, 1)
+                        residual = phase - np.polyval(coeffs, t)
+                        rms_errors.append(float(np.degrees(np.sqrt(np.mean(residual**2)))))
+
+                    overall_rms = np.mean(rms_errors)
+                    peak_sub = np.max(rms_errors)
+
+                    results.append({
+                        'settle_ms': round(settle * 1000, 1),
+                        'discard': discard,
+                        'avg': avg,
+                        'rms_deg': round(overall_rms, 2),
+                        'peak_sub_deg': round(peak_sub, 2),
+                    })
+                    config_idx += 1
+
+        # Restore original params
+        self.pll_settle_time = original_settle
+        self.discard_buffers = original_discard
+        self.num_chirps_avg = original_avg
+
+        # Sort by RMS to find best config
+        results.sort(key=lambda x: x['rms_deg'])
+        best = results[0] if results else None
+
+        return {
+            'type': 'fmcw_test_result',
+            'test': 'parametric_linearity',
+            'pass': best is not None and best['rms_deg'] < 10.0,
+            'best_config': best,
+            'all_results': results,
+            'description': 'Parametric sweep of settle time, discard buffers, and averaging. Find the config that minimizes phase error.',
             'timestamp': time.time(),
         }

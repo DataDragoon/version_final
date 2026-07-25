@@ -216,6 +216,24 @@ export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStat
           onRun={() => onCalAction('fmcw_test', { test_type: 'phase_residual' })}
         />
 
+        <FmcwTestCard
+          title="Channel Calibration"
+          description="Captures differential analog filter response between RX1 and RX2. Stored and applied to all future sweeps to remove systematic channel mismatch."
+          metric="Captures & saves calibration"
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'channel_cal' })}
+        />
+
+        <FmcwTestCard
+          title="Parametric Sweep"
+          description="Runs linearity test across multiple PLL settle times, discard buffers, and averages to find optimal config."
+          metric="Reports best configuration"
+          canRun={canCapture && !fmcwTestRunning}
+          running={fmcwTestRunning}
+          onRun={() => onCalAction('fmcw_test', { test_type: 'parametric_linearity' })}
+        />
+
         {/* Progress indicator during FMCW test */}
         {fmcwTestRunning && (
           <div className="flex flex-col gap-2 p-3 rounded-xl border border-[#A78BFA]/30 bg-[#A78BFA]/5">

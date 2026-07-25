@@ -36,6 +36,7 @@ class SDRServer:
         self.driver = BladeRFDriver()
         self.sfcw = SFCWEngine(self.driver)
         self.fmcw = FMCWEngine(self.driver)
+        self.fmcw.load_channel_cal()
         self.sweep_mode = 'sfcw'  # 'sfcw' or 'fmcw'
         self.clients = set()
         self.rx_queue = asyncio.Queue(maxsize=4)
@@ -356,7 +357,7 @@ class SDRServer:
             # FMCW validation tests
             elif action == 'fmcw_test':
                 test_type = cmd.get('test_type')
-                if test_type not in ('linearity', 'stitching', 'repeatability', 'phase_residual'):
+                if test_type not in ('linearity', 'stitching', 'repeatability', 'phase_residual', 'channel_cal', 'parametric_linearity'):
                     await ws.send(json.dumps({'type': 'error', 'message': f'Invalid test type: {test_type}'}))
                     return
                 if self.sfcw.running:

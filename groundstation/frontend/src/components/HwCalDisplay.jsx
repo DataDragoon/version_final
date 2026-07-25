@@ -252,6 +252,8 @@ function FmcwTestDisplay({ result }) {
     stitching: 'Stitching Quality',
     repeatability: 'Sweep Repeatability',
     phase_residual: 'Phase Residual',
+    channel_cal: 'Channel Calibration',
+    parametric_linearity: 'Parametric Sweep',
   };
 
   const passed = result.pass;
@@ -312,6 +314,22 @@ function FmcwTestDisplay({ result }) {
             <MetricTile label="Threshold" value="< 5° RMS" />
           </>
         )}
+        {result.test === 'channel_cal' && (
+          <>
+            <MetricTile label="Mag Ripple" value={`${result.mag_ripple_db?.toFixed(2)} dB`} />
+            <MetricTile label="Phase Ripple" value={`${result.phase_ripple_deg?.toFixed(1)}°`} />
+            <MetricTile label="Mag Std" value={`${result.mag_std_db?.toFixed(3)} dB`} />
+            <MetricTile label="Sweeps Avg'd" value={result.num_sweeps_averaged} />
+          </>
+        )}
+        {result.test === 'parametric_linearity' && result.best_config && (
+          <>
+            <MetricTile label="Best RMS" value={`${result.best_config.rms_deg}°`} pass={result.best_config.rms_deg < 10} />
+            <MetricTile label="Settle" value={`${result.best_config.settle_ms} ms`} />
+            <MetricTile label="Discard" value={`${result.best_config.discard} bufs`} />
+            <MetricTile label="Avg" value={`${result.best_config.avg} chirps`} />
+          </>
+        )}
       </div>
 
       {/* Per sub-band details for linearity test */}
@@ -356,6 +374,37 @@ function FmcwTestDisplay({ result }) {
         <div className="mt-2">
           <span className="text-[10px] text-[#555] uppercase tracking-wider mb-1 block">Phase Residual</span>
           <FmcwMiniPlot data={result.residual_plot} yLabel="rad" color="#A78BFA" />
+        </div>
+      )}
+
+      {/* Parametric sweep results table */}
+      {result.test === 'parametric_linearity' && result.all_results && (
+        <div className="flex flex-col gap-1 mt-2">
+          <span className="text-[10px] text-[#555] uppercase tracking-wider mb-1">All Configurations (sorted by RMS)</span>
+          <div className="max-h-60 overflow-y-auto rounded border border-white/5">
+            <table className="w-full text-[10px] font-mono">
+              <thead>
+                <tr className="text-[#555]">
+                  <th className="text-right p-1">Settle ms</th>
+                  <th className="text-right p-1">Discard</th>
+                  <th className="text-right p-1">Avg</th>
+                  <th className="text-right p-1">RMS°</th>
+                  <th className="text-right p-1">Peak°</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.all_results.map((r, i) => (
+                  <tr key={i} className={cn('border-t border-white/5', i === 0 ? 'text-emerald-400/80' : r.rms_deg < 10 ? 'text-white/60' : 'text-red-400/70')}>
+                    <td className="text-right p-1">{r.settle_ms}</td>
+                    <td className="text-right p-1">{r.discard}</td>
+                    <td className="text-right p-1">{r.avg}</td>
+                    <td className="text-right p-1">{r.rms_deg}</td>
+                    <td className="text-right p-1">{r.peak_sub_deg}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

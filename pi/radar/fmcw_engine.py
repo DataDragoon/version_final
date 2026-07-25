@@ -659,40 +659,35 @@ class FMCWEngine:
 
         return beat_signal, ref_phase, samples_per_chirp, num_sub
 
-    def _dechirp_aligned(self, rx_iq, chirp_ref):
-        """De-chirp and extract a clean segment avoiding the chirp wrap point.
+    def _find_chirp_wrap(self, rx_iq, samples_per_chirp):
+        """Find the chirp wrap point in raw RX signal.
 
-        TX loops the chirp continuously; RX capture (2× chirp length) starts at an
-        arbitrary offset. De-chirping a looping chirp against the reference produces a
-        beat tone with a phase discontinuity wherever the chirp restarts. We find that
-        discontinuity and extract one chirp period of clean beat signal.
+        The TX chirp loops, sweeping from -BW/2 to +BW/2 then wrapping back to -BW/2.
+        This wrap creates a large negative spike in the second derivative of phase
+        (instantaneous frequency drops by BW in one sample). Detect this spike to
+        find where the chirp restarts.
+
+        Returns the sample index right after the wrap (start of a new chirp cycle).
         """
-        samples_per_chirp = len(chirp_ref)
         n_rx = len(rx_iq)
 
-        if n_rx < samples_per_chirp:
-            beat = rx_iq * np.conj(chirp_ref[:n_rx])
-            return beat
+        # Compute instantaneous frequency (phase derivative)
+        # np.unwrap works here since max inst freq = BW/2 at sample_rate >> BW
+        phase = np.unwrap(np.angle(rx_iq))
+        inst_freq = np.diff(phase)
 
-        # De-chirp the full 2× capture by tiling the reference
-        ref_tiled = np.tile(chirp_ref, (n_rx // samples_per_chirp) + 1)[:n_rx]
-        beat_full = rx_iq * np.conj(ref_tiled)
+        # Second derivative: ~constant during linear chirp sweep, large negative at wrap
+        freq_accel = np.diff(inst_freq)
 
-        # The beat signal is a clean tone everywhere EXCEPT at chirp wrap points
-        # (every samples_per_chirp samples offset by the unknown capture offset).
-        # Find the wrap: largest instantaneous phase jump in the first chirp+margin.
-        search_end = min(n_rx - samples_per_chirp, int(samples_per_chirp * 1.2))
-        phase_diff = np.abs(np.diff(np.angle(beat_full[:search_end])))
-        wrap_idx = int(np.argmax(phase_diff)) + 1
+        # Search only the first chirp+margin to ensure room for extraction after wrap
+        search_end = min(len(freq_accel), n_rx - samples_per_chirp - 2)
+        if search_end < 10:
+            return 0
 
-        # Extract one clean chirp period starting just after the wrap
-        start = wrap_idx
-        end = start + samples_per_chirp
-        if end <= n_rx:
-            return beat_full[start:end]
+        # The wrap causes the most negative spike
+        wrap_idx = int(np.argmin(freq_accel[:search_end])) + 2
 
-        # Fallback: wrap went too late, take from beginning
-        return beat_full[:samples_per_chirp]
+        return wrap_idx
 
     def _capture_sweep_single(self):
         """Single-channel sweep with overlap correlation stitching.
@@ -761,10 +756,17 @@ class FMCWEngine:
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 rx_iq = i1 + 1j * q1
 
-                # De-chirp and extract clean segment avoiding the wrap
-                beat = self._dechirp_aligned(rx_iq, chirp_ref)
-                n_beat = min(len(beat), samples_per_chirp)
-                beat_accum[:n_beat] += beat[:n_beat]
+                # Find chirp wrap in raw signal and extract one aligned period
+                wrap_idx = self._find_chirp_wrap(rx_iq, samples_per_chirp)
+                end_idx = wrap_idx + samples_per_chirp
+                if end_idx <= len(rx_iq):
+                    aligned = rx_iq[wrap_idx:end_idx]
+                else:
+                    aligned = rx_iq[:samples_per_chirp]
+
+                # De-chirp against aligned reference
+                beat = aligned * np.conj(chirp_ref)
+                beat_accum += beat
                 captured += 1
 
             if captured > 0:

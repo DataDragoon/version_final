@@ -36,7 +36,7 @@ class FMCWEngine:
         self.start_freq = 1_000_000_000
         self.stop_freq = 6_000_000_000
         # FMCW-specific parameters
-        self.sub_band_bw = 20_000_000       # 20 MHz per chirp (safe for MIMO 30.72 MSPS)
+        self.sub_band_bw = 30_000_000       # 30 MHz per chirp (single-channel 40 MSPS)
         self.chirp_duration = 50e-6         # 50 μs per chirp
         self.pll_settle_time = 0.002        # 2 ms PLL settling between sub-bands
         self.num_chirps_avg = 8             # chirps to average per sub-band
@@ -299,8 +299,8 @@ class FMCWEngine:
             self.driver._configure_channels_dual()
             mode_str = "dual-channel (reference)"
         else:
-            # Single-channel: TX1+RX1 only — can go up to 61.44 MSPS
-            max_rate = 61_440_000
+            # Single-channel: TX1+RX1 only — cap at 40 MSPS (80 MSPS total USB limit)
+            max_rate = 40_000_000
             fmcw_rate = min(required_rate, max_rate)
             fmcw_rate = max(fmcw_rate, 4_000_000)
             self.driver.sample_rate = fmcw_rate

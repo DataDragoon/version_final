@@ -662,43 +662,53 @@ class FMCWEngine:
     def _find_chirp_wrap(self, rx_iq, samples_per_chirp):
         """Find the chirp wrap point in raw RX signal.
 
-        The TX chirp loops, sweeping from -BW/2 to +BW/2 then wrapping back to -BW/2.
-        This wrap creates a large negative spike in the second derivative of phase
-        (instantaneous frequency drops by BW in one sample). Detect this spike to
-        find where the chirp restarts.
+        TX loops a chirp of exactly samples_per_chirp. The signal repeats every
+        samples_per_chirp samples — EXCEPT at the wrap point where the DAC restarts
+        the chirp (brief transient). We find this by computing local correlation
+        between sample[n] and sample[n + samples_per_chirp]: high everywhere except
+        near the wrap.
 
-        With 3× capture, we search the middle portion (skip first 10% of a chirp
-        for unwrap warmup, ensure samples_per_chirp remains after the found wrap).
-
-        Returns the sample index right after the wrap (start of a new chirp cycle).
+        Returns the sample index right after the wrap (start of a clean chirp period).
         """
         n_rx = len(rx_iq)
 
-        # Compute instantaneous frequency (phase derivative)
-        phase = np.unwrap(np.angle(rx_iq))
-        inst_freq = np.diff(phase)
-
-        # Second derivative: ~constant during linear chirp sweep, large negative at wrap
-        freq_accel = np.diff(inst_freq)
-
-        # Skip early samples where unwrap has no context
-        search_start = max(10, samples_per_chirp // 10)
-        # Ensure we can extract a full chirp after the wrap
-        search_end = min(len(freq_accel), n_rx - samples_per_chirp - 2)
-        if search_end <= search_start:
+        # Need at least 2× chirp to do periodicity detection
+        if n_rx < samples_per_chirp * 2:
             return 0
 
-        # The wrap causes a spike of approximately -2π × BW / sample_rate
-        # For 20 MHz BW at 25 MSPS: spike ≈ -5.0 rad
-        region = freq_accel[search_start:search_end]
-        min_idx = int(np.argmin(region))
-        spike_val = region[min_idx]
+        # Compare each sample with the one exactly one chirp later
+        # For a perfectly periodic signal, rx[n] ≈ rx[n + period] everywhere
+        # except near the wrap boundary
+        max_offset = n_rx - samples_per_chirp
+        search_end = min(max_offset, samples_per_chirp * 2)
 
-        # Validate: threshold at -0.5 rad (normal acceleration is ~0.004 rad)
-        if spike_val > -0.5:
+        # Use short blocks for local correlation (faster than sample-by-sample)
+        block_size = max(16, samples_per_chirp // 64)
+        num_blocks = (search_end - block_size) // block_size
+
+        if num_blocks < 4:
             return 0
 
-        wrap_idx = search_start + min_idx + 2
+        corr_mag = np.zeros(num_blocks)
+        for b in range(num_blocks):
+            start = b * block_size
+            seg1 = rx_iq[start:start + block_size]
+            seg2 = rx_iq[start + samples_per_chirp:start + samples_per_chirp + block_size]
+            c = np.abs(np.vdot(seg1, seg2))
+            norm = np.sqrt(np.vdot(seg1, seg1).real * np.vdot(seg2, seg2).real)
+            corr_mag[b] = c / (norm + 1e-12)
+
+        # The wrap is where correlation drops (the two blocks straddle the boundary)
+        min_block = int(np.argmin(corr_mag))
+
+        # The wrap is at approximately min_block * block_size
+        # Return the next sample after the wrap as the start of a clean chirp
+        wrap_idx = (min_block + 1) * block_size
+
+        # Ensure we can extract a full chirp after this point
+        if wrap_idx + samples_per_chirp > n_rx:
+            wrap_idx = 0
+
         return wrap_idx
 
     def _capture_sweep_single(self):

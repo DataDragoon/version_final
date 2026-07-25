@@ -50,7 +50,7 @@ class FMCWEngine:
         self.rx2_gain = 20
         self.rx_gain_min = 5
         self.rx_gain_max = 38
-        self.range_offset = 0.55
+        self.range_offset = 2.26
         # Discard buffers after PLL hop (extra buffers beyond the mandatory 1)
         self.discard_buffers = 0
         # State
@@ -456,10 +456,13 @@ class FMCWEngine:
         max_range = SPEED_OF_LIGHT / (2 * (total_bw / total_points))
         distances = np.linspace(0, max_range, total_points) - self.range_offset
 
-        # Take first half (positive ranges)
-        half = total_points // 2
-        magnitude_db = magnitude_db[:half]
-        distances = distances[:half]
+        # Trim to useful display range (same as SFCW: c/(2*freq_step) where
+        # freq_step = total_bw / num_display_points). Use ~15m max.
+        display_max = SPEED_OF_LIGHT / (2 * total_bw) * 500  # ~500 SFCW-equivalent steps
+        display_bins = int(display_max / max_range * total_points)
+        display_bins = min(display_bins, total_points // 2)
+        magnitude_db = magnitude_db[:display_bins]
+        distances = distances[:display_bins]
 
         positive_mask = distances >= 0
         magnitude_db = magnitude_db[positive_mask]
@@ -486,7 +489,7 @@ class FMCWEngine:
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
             'range_resolution': SPEED_OF_LIGHT / (2 * total_bw),
-            'max_range': max_range / 2,
+            'max_range': display_max,
             'num_steps': total_points,
             'num_sub_bands': num_sub,
             'timestamp': time.time(),

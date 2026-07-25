@@ -61,7 +61,7 @@ export default function App() {
     subBandBw: 20,
     chirpDuration: 50,
     pllSettleTime: 2,
-    numChirpsAvg: 4,
+    numChirpsAvg: 8,
     overlapFraction: 0.25,
     useReferenceChannel: false,
     tx1Gain: 30,

@@ -1,20 +1,18 @@
 """Synthetic Bandwidth FMCW radar engine.
 
-Uses stepped-frequency CW processing with dual-channel reference division.
-Mathematically equivalent to SFCW for our hardware parameters (15 MHz
-instantaneous BW, sub-3m targets) but kept as a separate engine with
-independently tunable parameters for experimentation.
+True chirp-based FMCW processing with dual-channel reference division.
+At each sub-band:
+  - TX1+TX2 transmit a chirp (15 MHz BW, 50 us duration)
+  - RX2 (cable-through reference) used for cross-correlation alignment
+  - De-chirp: multiply received signal by conjugate of chirp reference
+  - H(f) = mean(dechirp(RX1)) / mean(dechirp(RX2)) per sub-band
+  - IFFT of H(f) across all sub-bands -> range profile
 
-Architecture:
-  - TX1+TX2 transmit CW tone (100 kHz offset)
-  - LO steps through N center frequencies to cover the full band
-  - RX1 captures scene reflections, RX2 captures cable-through reference
-  - H(f) = mean(RX1 × conj(ref_tone)) / mean(RX2 × conj(ref_tone))
-  - IFFT of H(f) → range profile
+Produces identical results to SFCW at our hardware parameters (15 MHz
+instantaneous BW, sub-3m targets) since each sub-band contributes one
+complex value. Kept separate for experimentation with chirp parameters.
 """
 
-import json
-import os
 import threading
 import time
 import numpy as np
@@ -24,6 +22,10 @@ from bladerf._bladerf import libbladeRF, ffi
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
+
+CHIRP_BW = 15_000_000
+CHIRP_DURATION = 50e-6
+SAMPLE_RATE = 20_000_000
 
 
 class FMCWEngine:
@@ -39,6 +41,9 @@ class FMCWEngine:
         self.tx2_gain = 30
         self.rx2_gain = 20
         self.range_offset = 0.55
+        # Chirp parameters
+        self.chirp_bw = CHIRP_BW
+        self.chirp_duration = CHIRP_DURATION
         # State
         self.running = False
         self._stop_event = threading.Event()
@@ -71,6 +76,10 @@ class FMCWEngine:
     @property
     def num_steps(self):
         return int((self.stop_freq - self.start_freq) / self.step_size) + 1
+
+    @property
+    def samples_per_chirp(self):
+        return int(SAMPLE_RATE * self.chirp_duration)
 
     def set_params(self, **kwargs):
         with self._lock:
@@ -111,6 +120,9 @@ class FMCWEngine:
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
+            'chirp_bw': self.chirp_bw,
+            'chirp_duration': self.chirp_duration,
+            'samples_per_chirp': self.samples_per_chirp,
             'background_active': self._background is not None,
             'reference_active': self._reference is not None,
             'sub_mode': self._sub_mode,
@@ -189,22 +201,34 @@ class FMCWEngine:
             self._restore_hardware()
             self.running = False
 
+    def _gen_chirp_ref(self):
+        """Generate complex chirp reference for cross-correlation and de-chirp."""
+        n = self.samples_per_chirp
+        t = np.arange(n, dtype=np.float64) / SAMPLE_RATE
+        f0 = -self.chirp_bw / 2
+        f1 = self.chirp_bw / 2
+        phase = 2 * np.pi * (f0 * t + (f1 - f0) / (2 * self.chirp_duration) * t ** 2)
+        return np.exp(1j * phase)
+
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
         self.driver.tx2_gain = self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
-        self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
+        self.driver.sample_rate = SAMPLE_RATE
+        self.driver.bandwidth = CHIRP_BW
+        self.driver.set_waveform('chirp', chirp_bw=self.chirp_bw,
+                                 chirp_duration=self.chirp_duration, amplitude=0.9)
         self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
-        n = 1024
-        t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
-        self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
+        # Capture 2 chirp periods -- enough to find alignment via cross-correlation
+        self._rx_num_samples = self.samples_per_chirp * 2
+        self._chirp_ref = self._gen_chirp_ref()
         self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        self.driver.start_rx_dual(self._rx_capture, num_samples=self._rx_num_samples)
         time.sleep(0.05)
 
         dev_ptr = self.driver.device.dev[0]
@@ -242,7 +266,7 @@ class FMCWEngine:
         self._rx_event.set()
 
     def _perform_sweep(self):
-        """Stepped CW sweep with dual-channel reference division."""
+        """FMCW sweep: chirp TX, cross-correlation alignment, de-chirp processing."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -250,8 +274,7 @@ class FMCWEngine:
 
         num_steps = int((stop - start) / step_size) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
-        h_signal = np.zeros(num_steps, dtype=np.complex128)
-        h_reference = np.zeros(num_steps, dtype=np.complex128)
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
@@ -259,6 +282,8 @@ class FMCWEngine:
 
         settle = self.pll_settle_time
         num_buffers = self.num_buffers
+        chirp_ref = self._chirp_ref
+        spc = self.samples_per_chirp
 
         for i in range(num_steps):
             if self._stop_event.is_set():
@@ -273,30 +298,50 @@ class FMCWEngine:
             self._rx_event.clear()
             self._rx_event.wait(timeout=1.0)
 
-            sig_accum = 0j
-            ref_accum = 0j
+            accum = 0j
             captured = 0
             for _ in range(num_buffers):
                 self._rx_event.clear()
                 if not self._rx_event.wait(timeout=1.0):
                     break
 
-                rx1, rx2 = self._rx_latest
-                if rx1 is None or rx2 is None:
+                rx1_raw, rx2_raw = self._rx_latest
+                if rx1_raw is None or rx2_raw is None:
                     continue
 
-                i1 = rx1[0::2].astype(np.float64) / 2047.0
-                q1 = rx1[1::2].astype(np.float64) / 2047.0
-                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
+                # Convert to complex IQ
+                i1 = rx1_raw[0::2].astype(np.float64) / 2047.0
+                q1 = rx1_raw[1::2].astype(np.float64) / 2047.0
+                rx1_iq = i1 + 1j * q1
 
-                i2 = rx2[0::2].astype(np.float64) / 2047.0
-                q2 = rx2[1::2].astype(np.float64) / 2047.0
-                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
+                i2 = rx2_raw[0::2].astype(np.float64) / 2047.0
+                q2 = rx2_raw[1::2].astype(np.float64) / 2047.0
+                rx2_iq = i2 + 1j * q2
 
-                captured += 1
+                # Cross-correlate RX2 with chirp reference to find chirp start
+                xcorr = np.abs(np.correlate(rx2_iq, chirp_ref, mode='valid'))
+                k = int(np.argmax(xcorr))
 
-            h_signal[i] = sig_accum / max(captured, 1)
-            h_reference[i] = ref_accum / max(captured, 1)
+                # Extract one chirp period aligned to the chirp start
+                if k + spc > len(rx1_iq):
+                    k = max(0, len(rx1_iq) - spc)
+
+                seg1 = rx1_iq[k:k + spc]
+                seg2 = rx2_iq[k:k + spc]
+
+                # De-chirp: multiply by conjugate of chirp reference
+                dechirp1 = seg1 * np.conj(chirp_ref[:len(seg1)])
+                dechirp2 = seg2 * np.conj(chirp_ref[:len(seg2)])
+
+                # Each de-chirped sub-band contributes one complex value (DC of de-chirp)
+                dc1 = np.mean(dechirp1)
+                dc2 = np.mean(dechirp2)
+
+                if abs(dc2) > 1e-10:
+                    accum += dc1 / dc2
+                    captured += 1
+
+            h_cal[i] = accum / max(captured, 1)
 
             if self._callback and i % 10 == 0:
                 self._callback({
@@ -305,12 +350,6 @@ class FMCWEngine:
                     'total': num_steps,
                     'freq_mhz': freqs[i] / 1e6,
                 })
-
-        # Phase-reference division
-        ref_mag = np.abs(h_reference)
-        valid = ref_mag > 1e-10
-        h_cal = np.zeros(num_steps, dtype=np.complex128)
-        h_cal[valid] = h_signal[valid] / h_reference[valid]
 
         # Capture reference / background
         if self._capture_reference:

@@ -10,7 +10,7 @@ const CHIRP_SAMPLE_RATE = 20_000_000;
 const CHIRP_BUFFER_TIME_MS = (CHIRP_SAMPLES / CHIRP_SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, sweepMode, fmcwParams, onFmcwParamsChange }) {
-  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset, dbFloor, dbCeil } = params;
+  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, rangeOffset, dbFloor, dbCeil } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -32,8 +32,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       step_size_mhz: overrides.stepSize ?? stepSize,
       settle_time_ms: overrides.settleTime ?? settleTime,
       num_buffers: overrides.numBuffers ?? numBuffers,
-      tx1_gain: overrides.tx1Gain ?? tx1Gain,
-      rx1_gain: overrides.rx1Gain ?? rx1Gain,
       range_offset: overrides.rangeOffset ?? rangeOffset,
     });
   };
@@ -181,27 +179,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 onChange={(v) => { update('dbCeil', v); }}
                 min={-120}
                 max={40}
-              />
-            </div>
-          </Section>
-
-          <Section label="Gains">
-            <div className="grid grid-cols-2 gap-2">
-              <EditableField
-                label="TX1"
-                value={tx1Gain}
-                unit="dB"
-                onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
-                min={0}
-                max={66}
-              />
-              <EditableField
-                label="RX1"
-                value={rx1Gain}
-                unit="dB"
-                onChange={(v) => { update('rx1Gain', v); sendParams({ rx1Gain: v }); }}
-                min={0}
-                max={60}
               />
             </div>
           </Section>

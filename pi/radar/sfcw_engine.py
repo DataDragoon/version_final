@@ -25,11 +25,11 @@ CALIBRATION_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(_
 class SFCWEngine:
     def __init__(self, driver: BladeRFDriver):
         self.driver = driver
-        self.start_freq = 1_000_000_000
-        self.stop_freq = 6_000_000_000
-        self.step_size = 10_000_000
+        self.start_freq = 2_000_000_000
+        self.stop_freq = 5_000_000_000
+        self.step_size = 20_000_000
         self.settle_time = 0.003
-        self.num_buffers = 4
+        self.num_buffers = 8
         self.tx1_gain = 25
         self.rx1_gain = 30
         self.tx2_gain = 30  # used when AGC off; when AGC on, TX2 tracks TX1

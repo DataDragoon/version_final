@@ -150,7 +150,7 @@ export default function Viewport({
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
         <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={Radar} label={sweepMode === 'fmcw' ? 'FMCW Radar' : 'SFCW Radar'} active={sfcwRunning || !!sfcwResult} color="orange" />
+          <PaneHeader icon={Radar} label={sweepMode === 'fmcw' ? 'Stepped-Chirp Radar' : 'SFCW Radar'} active={sfcwRunning || !!sfcwResult} color="orange" />
           <div className="flex-1 min-h-0 relative overflow-hidden">
             {(sfcwRunning || sfcwResult) && (
               <div className="absolute inset-0 pointer-events-none">

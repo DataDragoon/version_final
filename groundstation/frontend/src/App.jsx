@@ -37,7 +37,7 @@ export default function App() {
   const [sfcwResult, setSfcwResult] = useState(null);
   const [sfcwProgress, setSfcwProgress] = useState(null);
 
-  // Sweep mode (sfcw or fmcw)
+  // Sweep mode (sfcw or fmcw/stepped-chirp)
   const [sweepMode, setSweepMode] = useState('sfcw');
 
   // SFCW panel params (lifted so they survive panel switches)
@@ -54,7 +54,7 @@ export default function App() {
     dbCeil: -20,
   });
 
-  // FMCW panel params
+  // Stepped-Chirp panel params
   const [fmcwParams, setFmcwParams] = useState({
     startFreq: 1000,
     stopFreq: 5000,

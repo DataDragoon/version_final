@@ -5,6 +5,9 @@ import { Section, InfoTile, ToggleButton } from './Sidebar';
 const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
+const CHIRP_SAMPLES = 2000;
+const CHIRP_SAMPLE_RATE = 20_000_000;
+const CHIRP_BUFFER_TIME_MS = (CHIRP_SAMPLES / CHIRP_SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, sweepMode, fmcwParams, onFmcwParamsChange }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset, dbFloor, dbCeil } = params;
@@ -57,14 +60,14 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const captureTimeMs = numBuffers * BUFFER_TIME_MS;
   const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
 
-  // FMCW computed values
+  // Stepped-Chirp computed values
   const fmcwStepSize = fmcwParams?.stepSize || 10;
   const fmcwBandwidth = ((fmcwParams?.stopFreq || 5000) - (fmcwParams?.startFreq || 1000)) * 1e6;
   const fmcwRangeRes = fmcwBandwidth > 0 ? (299792458 / (2 * fmcwBandwidth)) : Infinity;
   const fmcwNumSteps = Math.floor(fmcwBandwidth / (fmcwStepSize * 1e6)) + 1;
   const fmcwSettleMs = fmcwParams?.pllSettleTime || 1;
   const fmcwNumBufs = fmcwParams?.numBuffers || 2;
-  const fmcwCaptureMs = fmcwNumBufs * BUFFER_TIME_MS;
+  const fmcwCaptureMs = fmcwNumBufs * CHIRP_BUFFER_TIME_MS;
   const fmcwSweepTime = fmcwNumSteps * (fmcwSettleMs + fmcwCaptureMs) / 1000;
   const fmcwMaxRange = fmcwStepSize > 0 ? (299792458 / (2 * fmcwStepSize * 1e6)) : Infinity;
 
@@ -93,7 +96,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
             )}
           >
-            FMCW
+            Chirp
           </button>
         </div>
       </Section>
@@ -214,7 +217,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </>
       ) : (
         <>
-          {/* FMCW Parameters (fast CW sweep with independent controls) */}
+          {/* Stepped-Chirp Parameters */}
           <Section label="Sweep Range">
             <div className="grid grid-cols-2 gap-2">
               <EditableField
@@ -265,7 +268,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 max={64}
               />
               <span className="text-[9px] text-[#333333] leading-tight px-1">
-                {fmcwCaptureMs.toFixed(2)} ms capture per step ({(fmcwNumBufs * BUFFER_SAMPLES).toLocaleString()} samples)
+                {fmcwCaptureMs.toFixed(2)} ms capture per step ({(fmcwNumBufs * CHIRP_SAMPLES).toLocaleString()} samples @ 20 MSPS)
               </span>
             </div>
             <EditableField
@@ -342,7 +345,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           }}
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
-          activeSubLabel={`${isFmcw ? 'FMCW' : 'SFCW'} sweeping ${isFmcw ? (fmcwParams?.startFreq ?? 1000) : startFreq}–${isFmcw ? (fmcwParams?.stopFreq ?? 6000) : stopFreq} MHz`}
+          activeSubLabel={`${isFmcw ? 'Chirp' : 'SFCW'} sweeping ${isFmcw ? (fmcwParams?.startFreq ?? 1000) : startFreq}–${isFmcw ? (fmcwParams?.stopFreq ?? 6000) : stopFreq} MHz`}
           idleSubLabel={!sdrConnected ? 'SDR not connected' : `${isFmcw ? fmcwNumSteps : numSteps} steps ready`}
           color="orange"
         />

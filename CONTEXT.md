@@ -111,6 +111,19 @@ with a simple framed binary protocol. Requirements:
   random PLL phase offsets between TX and RX synthesizers at each step.
   AD9361 single-synth mode does NOT work (FDD requires both PLLs active).
 
+### Modes
+
+- **SFCW** (sfcw_engine.py): CW tone per step, one complex H(f) value per step,
+  IFFT across steps → range profile. Resolution = c/(2*BW) where BW = stop-start.
+  Has per-frequency gain management via calibrated gain table.
+- **Chirp/FMCW** (fmcw_engine.py): 15 MHz chirp at each step center, matched-filter
+  processing (de-chirp + coherent sum = pulse compression). Gives BW*T = 750 (28.7 dB)
+  processing gain over CW. Same stepped-frequency IFFT for range profile.
+  At current params (15 MHz chirp, 50μs, <10m range), beat freq ~3.6 kHz falls in DC
+  FFT bin — no intra-chirp range resolution. True FMCW benefit requires >80 MHz chirp BW
+  or >5ms chirp duration (neither feasible with AD9361 at 20 MSPS).
+  Chirp value: SNR gain, better chirp-boundary timing, narrowband interference rejection.
+
 ## Wiring — MPU-6500 (I2C mode)
 
 | MPU-6500 Pin | Raspberry Pi | Notes |

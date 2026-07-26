@@ -172,11 +172,11 @@ export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStat
         </button>
       </Section>
 
-      {/* FMCW Validation Tests */}
-      <Section label="FMCW Validation">
+      {/* Chirp Validation Tests */}
+      <Section label="Chirp Validation">
         <div className="border-l-2 border-[#A78BFA]/30 pl-2.5 py-1 bg-white/[0.02] rounded-r-lg mb-2">
           <span className="text-[10px] text-[#777777] leading-relaxed">
-            Requires cable-through setup (TX1 → cable → RX1, TX2 → cable → RX2). Tests validate synthetic bandwidth chirp stitching quality.
+            Requires cable-through setup (TX1 → cable → RX1, TX2 → cable → RX2). Tests validate chirp de-chirp and reference division quality.
           </span>
         </div>
 
@@ -234,7 +234,7 @@ export default function HwCalPanel({ isConnected, sdrConnected, sendSdr, calStat
           onRun={() => onCalAction('fmcw_test', { test_type: 'parametric_linearity' })}
         />
 
-        {/* Progress indicator during FMCW test */}
+        {/* Progress indicator during chirp test */}
         {fmcwTestRunning && (
           <div className="flex flex-col gap-2 p-3 rounded-xl border border-[#A78BFA]/30 bg-[#A78BFA]/5">
             <div className="flex items-center gap-2">

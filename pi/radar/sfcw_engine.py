@@ -30,23 +30,27 @@ class SFCWEngine:
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 4
-        self.tx1_gain = 30
+        self.tx1_gain = 25
         self.rx1_gain = 30
-        self.tx2_gain = 30
-        self.rx2_gain = 20
+        self.tx2_gain = 30  # used when AGC off; when AGC on, TX2 tracks TX1
+        self.rx2_gain = 30
+        self.tx2_digital_scale = 0.05  # -26 dB digital atten on TX2 (AGC mode only)
         self.rx_gain_min = 5
         self.rx_gain_max = 38
-        # Empirical gain-vs-frequency table (from RF Calib measurements)
-        self._gain_table = [
-            (915_000_000, 41, 30),
-            (1_000_000_000, 42, 30),
-            (2_000_000_000, 54, 30),
-            (3_000_000_000, 66, 30),
-            (4_000_000_000, 66, 36),
-            (5_000_000_000, 65, 30),
-            (6_000_000_000, 66, 42),
-        ]
         self.range_offset = 0.55
+        # AGC parameters
+        self.agc_enabled = True
+        self.agc_target = 0.85  # target normalized magnitude (0.8-0.9 range)
+        self.agc_tolerance = 0.05  # acceptable deviation from target
+        self.tx1_gain_min = 10
+        self.tx1_gain_max = 66
+        self.rx1_gain_agc_min = 10
+        self.rx1_gain_agc_max = 60
+        self.rx1_gain_nominal = 15  # starting RX1 gain; AGC adjusts from here
+        self._last_agc_log = None  # stores last sweep's AGC log
+        # Characterization-based gain profile (computed once, applied every sweep)
+        self._char_profile = None  # dict: freqs, tx_gains, rx1_gains arrays
+        self._char_valid = False  # set after successful characterization
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -165,25 +169,25 @@ class SFCWEngine:
             return float('inf')
         return SPEED_OF_LIGHT / (2 * self.step_size)
 
-    def _interpolate_gains(self, freqs_hz):
-        """Interpolate TX and RX gains from empirical gain table."""
-        table = sorted(self._gain_table, key=lambda x: x[0])
-        cal_freqs = np.array([t[0] for t in table], dtype=np.float64)
-        cal_tx = np.array([t[1] for t in table], dtype=np.float64)
-        cal_rx = np.array([t[2] for t in table], dtype=np.float64)
-        freqs = np.asarray(freqs_hz, dtype=np.float64)
-        tx_gains = np.interp(freqs, cal_freqs, cal_tx).astype(int)
-        rx_gains = np.interp(freqs, cal_freqs, cal_rx).astype(int)
-        return tx_gains, rx_gains
+
+    def invalidate_characterization(self):
+        self._char_valid = False
+        self._char_profile = None
 
     def set_params(self, **kwargs):
         with self._lock:
+            freq_changed = False
             if 'start_freq' in kwargs:
                 self.start_freq = int(kwargs['start_freq'])
+                freq_changed = True
             if 'stop_freq' in kwargs:
                 self.stop_freq = int(kwargs['stop_freq'])
+                freq_changed = True
             if 'step_size' in kwargs:
                 self.step_size = int(kwargs['step_size'])
+                freq_changed = True
+            if freq_changed:
+                self._char_valid = False
             if 'settle_time' in kwargs:
                 self.settle_time = float(kwargs['settle_time'])
             if 'num_buffers' in kwargs:
@@ -202,6 +206,10 @@ class SFCWEngine:
                 self.rx_gain_max = int(kwargs['rx_gain_max'])
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
+            if 'agc_enabled' in kwargs:
+                self.agc_enabled = bool(kwargs['agc_enabled'])
+            if 'agc_target' in kwargs:
+                self.agc_target = float(kwargs['agc_target'])
 
     def get_params(self):
         return {
@@ -226,6 +234,9 @@ class SFCWEngine:
             'sub_mode': self._sub_mode,
             'mean_subtraction': self._mean_subtraction_enabled,
             'mean_count': self._mean_count,
+            'agc_enabled': self.agc_enabled,
+            'agc_target': self.agc_target,
+            'char_valid': self._char_valid,
         }
 
     def capture_background(self):
@@ -297,6 +308,19 @@ class SFCWEngine:
             self._configure_hardware()
             self._start_tx_rx()
 
+            # Run characterization if AGC enabled and no valid profile for current params
+            if self.agc_enabled:
+                num_steps = int((self.stop_freq - self.start_freq) / self.step_size) + 1
+                profile_matches = (self._char_valid and self._char_profile is not None
+                                   and len(self._char_profile['freqs']) == num_steps
+                                   and self._char_profile['freqs'][0] == self.start_freq
+                                   and self._char_profile['freqs'][-1] == self.stop_freq)
+                if not profile_matches:
+                    self._char_valid = False
+                    if not self._load_char_profile():
+                        if not self._characterize_sweep():
+                            return
+
             while not self._stop_event.is_set():
                 range_profile = self._perform_sweep()
                 if range_profile is not None and self._callback:
@@ -315,7 +339,9 @@ class SFCWEngine:
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
-        self.driver.tx2_gain = self.tx2_gain
+        # When AGC is on, TX2 tracks TX1 for phase matching (digital scale prevents saturation)
+        # When AGC is off, TX2 uses its own independent gain setting
+        self.driver.tx2_gain = self.tx1_gain if self.agc_enabled else self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         self.driver._configure_channels_dual()
@@ -326,7 +352,8 @@ class SFCWEngine:
         n = 1024
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
-        self.driver.start_tx_dual()
+        scale = self.tx2_digital_scale if self.agc_enabled else 1.0
+        self.driver.start_tx_dual(tx2_digital_scale=scale)
         self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
 
@@ -334,10 +361,12 @@ class SFCWEngine:
         dev_ptr = self.driver.device.dev[0]
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+        rx1_init = int(self.rx1_gain_nominal if self.agc_enabled else self.rx1_gain)
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), rx1_init)
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+        tx2_init = int(self.tx1_gain) if self.agc_enabled else int(self.tx2_gain)
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), tx2_init)
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
@@ -347,6 +376,188 @@ class SFCWEngine:
         self._rx_latest = (rx1_iq, rx2_iq)
         self._rx_event.set()
 
+    def _measure_step(self, num_buffers):
+        """Capture IQ at current frequency, return (sig_complex, ref_complex, rx1_peak, rx2_peak).
+
+        Peak values are max of |I| or |Q| (not complex magnitude) — this correctly
+        detects ADC clipping since each component clips independently at ±2047.
+        """
+        sig_accum = 0j
+        ref_accum = 0j
+        rx1_peak = 0.0
+        rx2_peak = 0.0
+        captured = 0
+        for _ in range(num_buffers):
+            self._rx_event.clear()
+            if not self._rx_event.wait(timeout=1.0):
+                break
+
+            rx1, rx2 = self._rx_latest
+            if rx1 is None or rx2 is None:
+                continue
+
+            i1 = rx1[0::2].astype(np.float64) / 2047.0
+            q1 = rx1[1::2].astype(np.float64) / 2047.0
+            sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
+            rx1_peak = max(rx1_peak, float(np.max(np.abs(i1))), float(np.max(np.abs(q1))))
+
+            i2 = rx2[0::2].astype(np.float64) / 2047.0
+            q2 = rx2[1::2].astype(np.float64) / 2047.0
+            ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
+            rx2_peak = max(rx2_peak, float(np.max(np.abs(i2))), float(np.max(np.abs(q2))))
+
+            captured += 1
+
+        sig = sig_accum / max(captured, 1)
+        ref = ref_accum / max(captured, 1)
+        return sig, ref, rx1_peak, rx2_peak
+
+    def _characterize_sweep(self):
+        """Iterative characterization: measure, predict gains, validate, refine.
+
+        Two passes:
+        1. Sweep at fixed conservative gain → measure raw frequency response
+        2. Apply predicted gains and sweep again → measure error, refine
+
+        This handles AD9361 gain non-linearity by measuring actual response at
+        the computed gains rather than assuming 1 dB register = 1 dB signal.
+        """
+        with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            step = self.step_size
+            settle = self.settle_time
+            agc_target = self.agc_target
+
+        num_steps = int((stop - start) / step) + 1
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        tx_ch1 = bladerf.CHANNEL_TX(1)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        # Start with current gain profile (or conservative defaults)
+        tx_gains = np.full(num_steps, int(self.tx1_gain), dtype=int)
+        rx1_gains = np.full(num_steps, int(self.rx1_gain_nominal), dtype=int)
+
+        for iteration in range(5):
+            print(f"[sfcw] Characterization pass {iteration+1}: "
+                  f"TX {tx_gains.min()}-{tx_gains.max()}, RX1 {rx1_gains.min()}-{rx1_gains.max()}...")
+
+            rx1_mags = np.zeros(num_steps)
+            rx2_mags = np.zeros(num_steps)
+
+            for i in range(num_steps):
+                if self._stop_event.is_set():
+                    return False
+
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, int(tx_gains[i]))
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, int(tx_gains[i]))
+                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, int(rx1_gains[i]))
+
+                f = int(freqs[i])
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+                time.sleep(settle)
+
+                self._rx_event.clear()
+                self._rx_event.wait(timeout=1.0)
+                _, _, rx1_peak, rx2_peak = self._measure_step(2)
+                rx1_mags[i] = rx1_peak
+                rx2_mags[i] = rx2_peak
+
+            # Check convergence: count steps within usable range
+            in_target = np.sum((rx1_mags > 0.6) & (rx1_mags < 0.95))
+            pct = 100 * in_target / num_steps
+            sat_count = np.sum(rx1_mags > 0.95)
+            print(f"[sfcw]   Pass {iteration+1}: {pct:.0f}% in range (0.6-0.95), "
+                  f"sat={sat_count}, mag {rx1_mags.min():.3f}-{rx1_mags.max():.3f}")
+
+            if pct > 85:
+                break
+
+            # Refine: use conservative correction (80% of computed, prevents oscillation)
+            damping = 0.8
+            for i in range(num_steps):
+                if rx1_mags[i] < 0.001:
+                    correction = 15.0
+                elif rx1_mags[i] > 0.95:
+                    correction = -6.0
+                else:
+                    correction = damping * 20.0 * np.log10(agc_target / rx1_mags[i])
+                correction = np.clip(correction, -12.0, 15.0)
+
+                if correction > 0:
+                    rx2_headroom = 20.0 * np.log10(0.90 / max(rx2_mags[i], 0.001)) if rx2_mags[i] > 0.01 else 30.0
+                    tx_add = min(correction, rx2_headroom)
+                    new_tx = int(np.clip(tx_gains[i] + tx_add, self.tx1_gain_min, self.tx1_gain_max))
+                    remaining = correction - (new_tx - tx_gains[i])
+                    tx_gains[i] = new_tx
+                    if remaining > 1.0:
+                        rx1_gains[i] = int(np.clip(rx1_gains[i] + remaining, self.rx1_gain_agc_min, self.rx1_gain_agc_max))
+                else:
+                    new_tx = int(np.clip(tx_gains[i] + correction, self.tx1_gain_min, self.tx1_gain_max))
+                    remaining = -correction - (tx_gains[i] - new_tx)
+                    tx_gains[i] = new_tx
+                    if remaining > 1.0:
+                        rx1_gains[i] = int(np.clip(rx1_gains[i] - remaining, self.rx1_gain_agc_min, self.rx1_gain_agc_max))
+
+        self._char_profile = {
+            'freqs': freqs,
+            'tx_gains': tx_gains,
+            'rx1_gains': rx1_gains,
+            'char_mags': rx1_mags,
+        }
+        self._char_valid = True
+        self._save_char_profile()
+
+        print(f"[sfcw] Characterization done: TX {tx_gains.min()}-{tx_gains.max()}, "
+              f"RX1 {rx1_gains.min()}-{rx1_gains.max()}")
+        return True
+
+    def _profile_filename(self, start=None, stop=None, step=None):
+        s = int(start or self.start_freq)
+        e = int(stop or self.stop_freq)
+        st = int(step or self.step_size)
+        return os.path.join(CALIBRATION_DIR, f'gain_profile_{s}_{e}_{st}.npz')
+
+    def _save_char_profile(self):
+        path = self._profile_filename()
+        os.makedirs(CALIBRATION_DIR, exist_ok=True)
+        np.savez(path,
+                 freqs=self._char_profile['freqs'],
+                 tx_gains=self._char_profile['tx_gains'],
+                 rx1_gains=self._char_profile['rx1_gains'],
+                 char_mags=self._char_profile['char_mags'])
+        print(f"[sfcw] Saved gain profile to {path}")
+
+    def _load_char_profile(self):
+        path = self._profile_filename()
+        if not os.path.exists(path):
+            return False
+        try:
+            npz = np.load(path)
+            freqs = npz['freqs']
+            num_steps = int((self.stop_freq - self.start_freq) / self.step_size) + 1
+            if len(freqs) != num_steps:
+                return False
+            self._char_profile = {
+                'freqs': freqs,
+                'tx_gains': npz['tx_gains'].astype(int),
+                'rx1_gains': npz['rx1_gains'].astype(int),
+                'char_mags': npz['char_mags'],
+            }
+            self._char_valid = True
+            print(f"[sfcw] Loaded gain profile ({len(freqs)} steps, "
+                  f"TX {npz['tx_gains'].min()}-{npz['tx_gains'].max()}, "
+                  f"RX1 {npz['rx1_gains'].min()}-{npz['rx1_gains'].max()})")
+            return True
+        except Exception as e:
+            print(f"[sfcw] Failed to load gain profile: {e}")
+            return False
+            return False
+
     def _perform_sweep(self):
         with self._lock:
             start = self.start_freq
@@ -354,54 +565,88 @@ class SFCWEngine:
             step = self.step_size
             settle = self.settle_time
             num_buffers = self.num_buffers
+            agc_enabled = self.agc_enabled
+            agc_target = self.agc_target
+            agc_tol = self.agc_tolerance
 
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
         h_signal = np.zeros(num_steps, dtype=np.complex128)
         h_reference = np.zeros(num_steps, dtype=np.complex128)
 
+        # Gain tracking for post-compensation
+        tx1_gains = np.full(num_steps, self.tx1_gain, dtype=np.float64)
+        rx1_gains = np.full(num_steps, self.rx1_gain_nominal if agc_enabled else self.rx1_gain, dtype=np.float64)
+        rx1_mags = np.zeros(num_steps)
+        rx2_mags = np.zeros(num_steps)
+
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
+        tx_ch1 = bladerf.CHANNEL_TX(1)
         rx_ch = bladerf.CHANNEL_RX(0)
-        rx_ch1 = bladerf.CHANNEL_RX(1)
+
+        # Use characterized gain profile if available, otherwise fixed gains
+        use_profile = agc_enabled and self._char_valid and self._char_profile is not None
+        if use_profile:
+            prof = self._char_profile
+            # Interpolate profile onto current sweep grid if needed
+            if len(prof['freqs']) == num_steps and prof['freqs'][0] == freqs[0]:
+                prof_tx = prof['tx_gains']
+                prof_rx1 = prof['rx1_gains']
+            else:
+                prof_tx = np.interp(freqs, prof['freqs'], prof['tx_gains']).astype(int)
+                prof_rx1 = np.interp(freqs, prof['freqs'], prof['rx1_gains']).astype(int)
+
+        if not use_profile:
+            cur_tx = int(self.tx1_gain)
+            cur_rx1 = int(self.rx1_gain_nominal if agc_enabled else self.rx1_gain)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
+
+            # Apply pre-computed gains BEFORE frequency change (gain settles during PLL settle)
+            if use_profile:
+                cur_tx = int(prof_tx[i])
+                cur_rx1 = int(prof_rx1[i])
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, cur_tx)
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, cur_tx)
+                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, cur_rx1)
+
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             time.sleep(settle)
 
-            # Discard first buffer — may contain samples from before PLL settled
             self._rx_event.clear()
             self._rx_event.wait(timeout=1.0)
 
-            sig_accum = 0j
-            ref_accum = 0j
-            captured = 0
-            for _ in range(num_buffers):
-                self._rx_event.clear()
-                if not self._rx_event.wait(timeout=1.0):
-                    break
+            sig, ref, rx1_peak, rx2_peak = self._measure_step(num_buffers)
 
-                rx1, rx2 = self._rx_latest
-                if rx1 is None or rx2 is None:
-                    continue
+            # Safety: if saturated despite profile, back off and re-measure
+            if use_profile and (rx1_peak > 0.95 or rx2_peak > 0.95):
+                for _retry in range(3):
+                    if rx2_peak > 0.95:
+                        cur_tx = max(self.tx1_gain_min, cur_tx - 6)
+                        libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, cur_tx)
+                        libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, cur_tx)
+                    else:
+                        cur_rx1 = max(self.rx1_gain_agc_min, cur_rx1 - 6)
+                        libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, cur_rx1)
+                    time.sleep(settle)
+                    self._rx_event.clear()
+                    self._rx_event.wait(timeout=1.0)
+                    sig, ref, rx1_peak, rx2_peak = self._measure_step(num_buffers)
+                    if rx1_peak <= 0.95 and rx2_peak <= 0.95:
+                        break
 
-                i1 = rx1[0::2].astype(np.float64) / 2047.0
-                q1 = rx1[1::2].astype(np.float64) / 2047.0
-                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
-
-                i2 = rx2[0::2].astype(np.float64) / 2047.0
-                q2 = rx2[1::2].astype(np.float64) / 2047.0
-                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
-
-                captured += 1
-
-            h_signal[i] = sig_accum / max(captured, 1)
-            h_reference[i] = ref_accum / max(captured, 1)
+            tx1_gains[i] = cur_tx
+            rx1_gains[i] = cur_rx1
+            rx1_mags[i] = rx1_peak
+            rx2_mags[i] = rx2_peak
+            h_signal[i] = sig
+            h_reference[i] = ref
 
             if self._callback and i % 10 == 0:
                 self._callback({
@@ -411,11 +656,36 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
+        # Build AGC log
+        agc_log = {
+            'tx1_gains': tx1_gains.tolist(),
+            'rx1_gains': rx1_gains.tolist(),
+            'rx1_mags': rx1_mags.tolist(),
+            'rx2_mags': rx2_mags.tolist(),
+            'agc_enabled': agc_enabled,
+        }
+        self._last_agc_log = agc_log
+
+        if agc_enabled:
+            print(f"[sfcw] AGC sweep complete: TX1 {int(tx1_gains[0])}->{int(tx1_gains[-1])} dB, "
+                  f"RX1 {int(rx1_gains[0])}->{int(rx1_gains[-1])} dB, "
+                  f"mag range {rx1_mags.min():.3f}-{rx1_mags.max():.3f} "
+                  f"(target {agc_target:.2f})")
+
         # Phase-reference division: cancels TX and RX PLL phase offsets
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        # Gain compensation: only RX1 changes need correction.
+        # TX changes cancel in division (TX1=TX2 same analog gain → same phase/amplitude).
+        # RX1 only affects h_signal, so divide out its variation relative to first step.
+        if agc_enabled:
+            rx1_ref = rx1_gains[0]
+            gain_compensation = 10.0 ** ((rx1_gains - rx1_ref) / 20.0)
+            nonzero = gain_compensation > 1e-10
+            h_cal[nonzero] = h_cal[nonzero] / gain_compensation[nonzero]
 
         # Hardware calibration corrections (disabled — causes ringing/artifacts)
         # if self._cal_cable_thru_enabled and self._cal_cable_thru is not None:
@@ -522,6 +792,7 @@ class SFCWEngine:
             'h_cal_real': h_cal.real.tolist(),
             'h_cal_imag': h_cal.imag.tolist(),
             'freqs': freqs.tolist(),
+            'agc_log': agc_log,
         }
 
         if ref_trace_db is not None:

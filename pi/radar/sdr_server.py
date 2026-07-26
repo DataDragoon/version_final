@@ -139,6 +139,10 @@ class SDRServer:
                     params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
+                if 'agc_enabled' in cmd:
+                    params['agc_enabled'] = bool(cmd['agc_enabled'])
+                if 'agc_target' in cmd:
+                    params['agc_target'] = float(cmd['agc_target'])
                 needs_restart = self.sfcw.running and any(
                     k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
                                           'start_freq', 'stop_freq', 'step_size')
@@ -189,6 +193,13 @@ class SDRServer:
 
             elif action == 'sfcw_mean_reset':
                 self.sfcw.reset_mean()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_recharacterize':
+                self.sfcw.invalidate_characterization()
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                    self.sfcw.start(self._sfcw_callback)
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_get_status':
@@ -490,6 +501,8 @@ class SDRServer:
                     result_msg['h_cal_real'] = [round(v, 8) for v in data['h_cal_real']]
                     result_msg['h_cal_imag'] = [round(v, 8) for v in data['h_cal_imag']]
                     result_msg['freqs'] = data['freqs']
+                if 'agc_log' in data:
+                    result_msg['agc_log'] = data['agc_log']
                 msg = json.dumps(result_msg)
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
                 msg = json.dumps(data)

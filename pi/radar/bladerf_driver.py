@@ -261,13 +261,19 @@ class BladeRFDriver:
 
     # -- Dual-channel TX/RX (used by SFCW engine for reference channel) --
 
-    def start_tx_dual(self):
-        """Start TX on both channels (TX1=antenna, TX2=reference cable)."""
+    def start_tx_dual(self, tx2_digital_scale=1.0):
+        """Start TX on both channels (TX1=antenna, TX2=reference cable).
+
+        tx2_digital_scale: scale factor for TX2 digital samples (0.0-1.0).
+        Use <1.0 to reduce TX2 output power without changing analog gain setting,
+        preserving phase-matched behavior with TX1 at the same gain register value.
+        """
         if self.tx_running:
             return
         if self._last_layout == 'x1':
             self.reopen()
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
+        self._tx2_digital_scale = float(tx2_digital_scale)
         self._tx_stop.clear()
         self.tx_running = True
         self._dual_channel = True
@@ -291,12 +297,17 @@ class BladeRFDriver:
             while not self._tx_stop.is_set():
                 with self._lock:
                     buf = self._tx_buffer
+                    scale2 = self._tx2_digital_scale
                 n_samples = len(buf) // 2
                 dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
                 dual_buf[0::4] = buf[0::2]  # TX1 I
                 dual_buf[1::4] = buf[1::2]  # TX1 Q
-                dual_buf[2::4] = buf[0::2]  # TX2 I
-                dual_buf[3::4] = buf[1::2]  # TX2 Q
+                if scale2 >= 1.0:
+                    dual_buf[2::4] = buf[0::2]  # TX2 I
+                    dual_buf[3::4] = buf[1::2]  # TX2 Q
+                else:
+                    dual_buf[2::4] = (buf[0::2].astype(np.float64) * scale2).astype(np.int16)
+                    dual_buf[3::4] = (buf[1::2].astype(np.float64) * scale2).astype(np.int16)
                 self.device.sync_tx(dual_buf.tobytes(), n_samples)
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")

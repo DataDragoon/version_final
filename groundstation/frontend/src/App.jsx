@@ -38,7 +38,7 @@ export default function App() {
   const [sfcwProgress, setSfcwProgress] = useState(null);
 
   // Sweep mode (sfcw or fmcw)
-  const [sweepMode, setSweepMode] = useState('fmcw');
+  const [sweepMode, setSweepMode] = useState('sfcw');
 
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
@@ -47,7 +47,7 @@ export default function App() {
     stepSize: 10,
     settleTime: 3,
     numBuffers: 4,
-    tx1Gain: 56,
+    tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.55,
     dbFloor: -90,
@@ -57,14 +57,11 @@ export default function App() {
   // FMCW panel params
   const [fmcwParams, setFmcwParams] = useState({
     startFreq: 1000,
-    stopFreq: 6000,
-    subBandBw: 25,
-    chirpDuration: 50,
-    pllSettleTime: 2,
-    numChirpsAvg: 8,
-    overlapFraction: 0.25,
-    useReferenceChannel: false,
-    tx1Gain: 56,
+    stopFreq: 5000,
+    stepSize: 10,
+    pllSettleTime: 1,
+    numBuffers: 2,
+    tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.55,
     dbFloor: -90,

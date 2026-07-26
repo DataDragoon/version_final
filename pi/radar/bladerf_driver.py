@@ -327,11 +327,12 @@ class BladeRFDriver:
         self._rx_stop.clear()
         self.rx_running = True
         self._dual_channel = True
+        buf_size = max(4096, num_samples * 2)
         self.device.sync_config(
             layout=ChannelLayout.RX_X2,
             fmt=Format.SC16_Q11,
             num_buffers=16,
-            buffer_size=4096,
+            buffer_size=buf_size,
             num_transfers=8,
             stream_timeout=3500
         )
@@ -343,20 +344,23 @@ class BladeRFDriver:
 
     def _rx_loop_dual(self, callback, num_samples):
         """RX loop for dual channel — deinterleaves RX1 and RX2."""
-        # RX_X2: interleaved [RX1_I, RX1_Q, RX2_I, RX2_Q, ...]
-        # num_samples is per-channel, so total buffer is num_samples * 2 channels * 2 (I+Q) * 2 bytes
-        buf = bytearray(num_samples * 2 * 2 * 2)
+        # RX_X2: sync_rx(buf, N) captures N sample-pairs total.
+        # Each pair = [I1,Q1,I2,Q2] = 4 int16. Yields N samples per channel.
+        # Request num_samples*2 to get num_samples per channel after deinterleave.
+        rx_count = num_samples * 2
+        buf = bytearray(rx_count * 4 * 2)  # rx_count pairs × 4 int16 × 2 bytes
         try:
             while not self._rx_stop.is_set():
-                self.device.sync_rx(buf, num_samples)
+                self.device.sync_rx(buf, rx_count)
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
-                # Deinterleave: [I1, Q1, I2, Q2, I1, Q1, I2, Q2, ...]
+                # iq has rx_count*4 int16 values: [I1,Q1,I2,Q2, I1,Q1,I2,Q2, ...]
+                # Each channel has rx_count values, but we want num_samples per ch
                 rx1 = np.empty(num_samples * 2, dtype=np.int16)
                 rx2 = np.empty(num_samples * 2, dtype=np.int16)
-                rx1[0::2] = iq[0::4]  # RX1 I
-                rx1[1::2] = iq[1::4]  # RX1 Q
-                rx2[0::2] = iq[2::4]  # RX2 I
-                rx2[1::2] = iq[3::4]  # RX2 Q
+                rx1[0::2] = iq[0::4][:num_samples]
+                rx1[1::2] = iq[1::4][:num_samples]
+                rx2[0::2] = iq[2::4][:num_samples]
+                rx2[1::2] = iq[3::4][:num_samples]
                 callback(rx1, rx2)
         except Exception as e:
             print(f"[bladerf] RX dual error: {e}")

@@ -36,8 +36,7 @@ class SDRServer:
         self.driver = BladeRFDriver()
         self.sfcw = SFCWEngine(self.driver)
         self.fmcw = FMCWEngine(self.driver)
-        self.fmcw.load_channel_cal()
-        self.sweep_mode = 'fmcw'  # 'sfcw' or 'fmcw'
+        self.sweep_mode = 'sfcw'  # 'sfcw' or 'fmcw'
         self.clients = set()
         self.rx_queue = asyncio.Queue(maxsize=4)
         self.sfcw_queue = asyncio.Queue(maxsize=8)
@@ -287,31 +286,21 @@ class SDRServer:
                     params['start_freq'] = float(cmd['start_freq_mhz']) * 1e6
                 if 'stop_freq_mhz' in cmd:
                     params['stop_freq'] = float(cmd['stop_freq_mhz']) * 1e6
-                if 'sub_band_bw_mhz' in cmd:
-                    params['sub_band_bw'] = float(cmd['sub_band_bw_mhz']) * 1e6
-                if 'chirp_duration_us' in cmd:
-                    params['chirp_duration'] = float(cmd['chirp_duration_us']) * 1e-6
+                if 'step_size_mhz' in cmd:
+                    params['step_size'] = float(cmd['step_size_mhz']) * 1e6
                 if 'pll_settle_time_ms' in cmd:
                     params['pll_settle_time'] = float(cmd['pll_settle_time_ms']) / 1000
-                if 'num_chirps_avg' in cmd:
-                    params['num_chirps_avg'] = int(cmd['num_chirps_avg'])
-                if 'overlap_fraction' in cmd:
-                    params['overlap_fraction'] = float(cmd['overlap_fraction'])
+                if 'num_buffers' in cmd:
+                    params['num_buffers'] = int(cmd['num_buffers'])
                 if 'tx1_gain' in cmd:
                     params['tx1_gain'] = int(cmd['tx1_gain'])
                 if 'rx1_gain' in cmd:
                     params['rx1_gain'] = int(cmd['rx1_gain'])
-                if 'tx2_gain' in cmd:
-                    params['tx2_gain'] = int(cmd['tx2_gain'])
-                if 'rx2_gain' in cmd:
-                    params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
-                if 'use_reference_channel' in cmd:
-                    params['use_reference_channel'] = bool(cmd['use_reference_channel'])
                 needs_restart = self.fmcw.running and any(
-                    k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
-                                          'start_freq', 'stop_freq', 'sub_band_bw')
+                    k in params for k in ('tx1_gain', 'rx1_gain',
+                                          'start_freq', 'stop_freq', 'step_size')
                 )
                 self.fmcw.set_params(**params)
                 if needs_restart:
@@ -351,27 +340,8 @@ class SDRServer:
                 self.fmcw.clear_all_subtraction()
                 await self._broadcast_sfcw_status()
 
-            elif action == 'fmcw_clear_channel_cal':
-                self.fmcw.clear_channel_cal()
-                await self._broadcast_sfcw_status()
-
             elif action == 'fmcw_get_status':
                 await ws.send(json.dumps({'type': 'fmcw_status', **self._get_fmcw_status()}))
-
-            # FMCW validation tests
-            elif action == 'fmcw_test':
-                test_type = cmd.get('test_type')
-                if test_type not in ('linearity', 'stitching', 'repeatability', 'phase_residual', 'channel_cal', 'parametric_linearity'):
-                    await ws.send(json.dumps({'type': 'error', 'message': f'Invalid test type: {test_type}'}))
-                    return
-                if self.sfcw.running:
-                    self.sfcw.stop()
-                if self.fmcw.running:
-                    self.fmcw.stop()
-                self._stop_all_streams()
-                await self._broadcast_status()
-                self.fmcw.run_validation_test(test_type, self._sfcw_callback)
-                await self._broadcast_sfcw_status()
 
             # B-scan with active sweep mode
             elif action == 'sweep_capture':

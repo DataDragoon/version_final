@@ -40,12 +40,9 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       cmd: 'fmcw_set_params',
       start_freq_mhz: overrides.startFreq ?? fmcwParams.startFreq,
       stop_freq_mhz: overrides.stopFreq ?? fmcwParams.stopFreq,
-      sub_band_bw_mhz: overrides.subBandBw ?? fmcwParams.subBandBw,
-      chirp_duration_us: overrides.chirpDuration ?? fmcwParams.chirpDuration,
+      step_size_mhz: overrides.stepSize ?? fmcwParams.stepSize,
       pll_settle_time_ms: overrides.pllSettleTime ?? fmcwParams.pllSettleTime,
-      num_chirps_avg: overrides.numChirpsAvg ?? fmcwParams.numChirpsAvg,
-      overlap_fraction: overrides.overlapFraction ?? fmcwParams.overlapFraction,
-      use_reference_channel: overrides.useReferenceChannel ?? fmcwParams.useReferenceChannel,
+      num_buffers: overrides.numBuffers ?? fmcwParams.numBuffers,
       tx1_gain: overrides.tx1Gain ?? fmcwParams.tx1Gain,
       rx1_gain: overrides.rx1Gain ?? fmcwParams.rx1Gain,
       range_offset: overrides.rangeOffset ?? fmcwParams.rangeOffset,
@@ -61,28 +58,21 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
 
   // FMCW computed values
-  const fmcwBandwidth = ((fmcwParams?.stopFreq || 6000) - (fmcwParams?.startFreq || 1000)) * 1e6;
+  const fmcwStepSize = fmcwParams?.stepSize || 10;
+  const fmcwBandwidth = ((fmcwParams?.stopFreq || 5000) - (fmcwParams?.startFreq || 1000)) * 1e6;
   const fmcwRangeRes = fmcwBandwidth > 0 ? (299792458 / (2 * fmcwBandwidth)) : Infinity;
-  const fmcwSubStep = (fmcwParams?.subBandBw || 56) * (1.0 - (fmcwParams?.overlapFraction || 0));
-  const fmcwNumSub = Math.ceil(((fmcwParams?.stopFreq || 6000) - (fmcwParams?.startFreq || 1000)) / fmcwSubStep);
-  const fmcwSweepTime = fmcwNumSub * ((fmcwParams?.chirpDuration || 50) * 1e-6 * (fmcwParams?.numChirpsAvg || 4) + (fmcwParams?.pllSettleTime || 2) / 1000);
+  const fmcwNumSteps = Math.floor(fmcwBandwidth / (fmcwStepSize * 1e6)) + 1;
+  const fmcwSettleMs = fmcwParams?.pllSettleTime || 1;
+  const fmcwNumBufs = fmcwParams?.numBuffers || 2;
+  const fmcwCaptureMs = fmcwNumBufs * BUFFER_TIME_MS;
+  const fmcwSweepTime = fmcwNumSteps * (fmcwSettleMs + fmcwCaptureMs) / 1000;
+  const fmcwMaxRange = fmcwStepSize > 0 ? (299792458 / (2 * fmcwStepSize * 1e6)) : Infinity;
 
   return (
     <>
       {/* Mode Toggle */}
       <Section label="Sweep Mode">
         <div className="grid grid-cols-2 gap-1">
-          <button
-            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'fmcw' })}
-            className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              isFmcw
-                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
-                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
-            )}
-          >
-            FMCW
-          </button>
           <button
             onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'sfcw' })}
             className={cn(
@@ -93,6 +83,17 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             )}
           >
             SFCW
+          </button>
+          <button
+            onClick={() => sendSdr({ cmd: 'set_sweep_mode', mode: 'fmcw' })}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              isFmcw
+                ? 'bg-[#D1855C]/15 border-[#D1855C]/40 text-[#D1855C]'
+                : 'bg-white/5 border-white/10 text-white/50 hover:text-white/70'
+            )}
+          >
+            FMCW
           </button>
         </div>
       </Section>
@@ -213,7 +214,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </>
       ) : (
         <>
-          {/* FMCW Parameters */}
+          {/* FMCW Parameters (fast CW sweep with independent controls) */}
           <Section label="Sweep Range">
             <div className="grid grid-cols-2 gap-2">
               <EditableField
@@ -226,7 +227,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               />
               <EditableField
                 label="Stop"
-                value={fmcwParams?.stopFreq ?? 6000}
+                value={fmcwParams?.stopFreq ?? 5000}
                 unit="MHz"
                 onChange={(v) => { updateFmcw('stopFreq', v); sendFmcwParams({ stopFreq: v }); }}
                 min={47}
@@ -235,68 +236,37 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             </div>
           </Section>
 
-          <Section label="Chirp Config">
+          <Section label="Step Config">
             <div className="grid grid-cols-2 gap-2">
               <EditableField
-                label="Sub-band BW"
-                value={fmcwParams?.subBandBw ?? 20}
+                label="Step Size"
+                value={fmcwParams?.stepSize ?? 10}
                 unit="MHz"
-                onChange={(v) => { updateFmcw('subBandBw', v); sendFmcwParams({ subBandBw: v }); }}
-                min={1}
-                max={24}
-              />
-              <EditableField
-                label="Chirp Dur"
-                value={fmcwParams?.chirpDuration ?? 50}
-                unit="μs"
-                onChange={(v) => { updateFmcw('chirpDuration', v); sendFmcwParams({ chirpDuration: v }); }}
-                min={10}
+                onChange={(v) => { updateFmcw('stepSize', v); sendFmcwParams({ stepSize: v }); }}
+                min={0.1}
                 max={500}
               />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
               <EditableField
-                label="PLL Settle"
-                value={fmcwParams?.pllSettleTime ?? 2}
+                label="Settle"
+                value={fmcwParams?.pllSettleTime ?? 1}
                 unit="ms"
                 onChange={(v) => { updateFmcw('pllSettleTime', v); sendFmcwParams({ pllSettleTime: v }); }}
                 min={0.1}
                 max={20}
               />
-              <EditableField
-                label="Avg Chirps"
-                value={fmcwParams?.numChirpsAvg ?? 4}
-                unit="x"
-                onChange={(v) => { updateFmcw('numChirpsAvg', v); sendFmcwParams({ numChirpsAvg: v }); }}
-                min={1}
-                max={32}
-              />
             </div>
-            <EditableField
-              label="Overlap"
-              value={fmcwParams?.overlapFraction ?? 0}
-              unit="frac"
-              onChange={(v) => { updateFmcw('overlapFraction', v); sendFmcwParams({ overlapFraction: v }); }}
-              min={0}
-              max={0.5}
-            />
-            <div className="flex items-center gap-2 px-1">
-              <span className="text-[10px] text-[#777] flex-1">Stitching Mode</span>
-              <button
-                onClick={() => {
-                  const next = !fmcwParams?.useReferenceChannel;
-                  updateFmcw('useReferenceChannel', next);
-                  sendFmcwParams({ useReferenceChannel: next });
-                }}
-                className={cn(
-                  'px-2 py-1 rounded text-[9px] font-medium border transition-all',
-                  fmcwParams?.useReferenceChannel
-                    ? 'border-amber-400/40 bg-amber-400/10 text-amber-400'
-                    : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-400'
-                )}
-              >
-                {fmcwParams?.useReferenceChannel ? 'Ref Cable (4ch)' : 'Overlap (2ch)'}
-              </button>
+            <div className="flex flex-col gap-1">
+              <EditableField
+                label="Buffers"
+                value={fmcwParams?.numBuffers ?? 2}
+                unit="x1024 smp"
+                onChange={(v) => { updateFmcw('numBuffers', v); sendFmcwParams({ numBuffers: v }); }}
+                min={1}
+                max={64}
+              />
+              <span className="text-[9px] text-[#333333] leading-tight px-1">
+                {fmcwCaptureMs.toFixed(2)} ms capture per step ({(fmcwNumBufs * BUFFER_SAMPLES).toLocaleString()} samples)
+              </span>
             </div>
             <EditableField
               label="Range Offset"
@@ -334,7 +304,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 unit="dB"
                 onChange={(v) => { updateFmcw('tx1Gain', v); sendFmcwParams({ tx1Gain: v }); }}
                 min={0}
-                max={30}
+                max={66}
               />
               <EditableField
                 label="RX1"
@@ -349,10 +319,10 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
 
           <Section label="Sweep Info">
             <div className="grid grid-cols-2 gap-2">
-              <InfoTile label="Sub-bands" value={fmcwNumSub} />
-              <InfoTile label="Sweep" value={fmcwSweepTime < 1 ? `${(fmcwSweepTime * 1000).toFixed(0)} ms` : `${fmcwSweepTime.toFixed(2)} s`} />
+              <InfoTile label="Steps" value={fmcwNumSteps} />
+              <InfoTile label="Sweep" value={fmcwSweepTime < 1 ? `${(fmcwSweepTime * 1000).toFixed(0)} ms` : `${fmcwSweepTime.toFixed(1)} s`} />
               <InfoTile label="Δr" value={fmcwRangeRes < 1 ? `${(fmcwRangeRes * 100).toFixed(1)} cm` : `${fmcwRangeRes.toFixed(2)} m`} />
-              <InfoTile label="BW" value={`${(fmcwBandwidth / 1e9).toFixed(1)} GHz`} />
+              <InfoTile label="R max" value={fmcwMaxRange < 1000 ? `${fmcwMaxRange.toFixed(1)} m` : `${(fmcwMaxRange / 1000).toFixed(1)} km`} />
             </div>
           </Section>
         </>
@@ -373,7 +343,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
           activeSubLabel={`${isFmcw ? 'FMCW' : 'SFCW'} sweeping ${isFmcw ? (fmcwParams?.startFreq ?? 1000) : startFreq}–${isFmcw ? (fmcwParams?.stopFreq ?? 6000) : stopFreq} MHz`}
-          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${isFmcw ? fmcwNumSub + ' sub-bands' : numSteps + ' steps'} ready`}
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${isFmcw ? fmcwNumSteps : numSteps} steps ready`}
           color="orange"
         />
         <div className="flex items-center justify-between px-1 mt-2 mb-1">

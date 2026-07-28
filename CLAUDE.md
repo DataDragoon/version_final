@@ -51,8 +51,18 @@ SFCW Gain: Per-frequency lookup table (no runtime AGC, no iterative characteriza
   RX1=RX2 gain (same register) — phase cancels in signal/reference division.
   TX2 digital scale prevents cable saturation (binary-searched to land RX2 at ~0.9).
   Algorithm: ramp TX 25→66, then RX 25→60 until RX1≈0.9; back off if overshoot.
-  During sweep, table lookup replaces per-step gain — no AGC, no compensation needed.
+  During sweep, table lookup with tx_headroom_db=16 (prevents RX clipping from wall reflections).
   Verify via 'sfcw_verify_table' cmd. Reload via 'sfcw_reload_table'.
   Key insight: AD9361 gain vs frequency is highly non-linear — must measure empirically.
+SFCW Signal Processing (critical findings):
+  Gain table targets RX1=0.9 for coupling-only — wall reflections add signal, causing ADC clipping.
+  Fix: tx_headroom_db reduces TX power during sweeps (16 dB default = eliminates clipping).
+  After sig/ref division, per-bin magnitude normalization (unit magnitude) is applied.
+  This makes the NDFT purely phase-based: targets = coherent phase slope, not amplitude.
+  Processing gain from 139-bin coherent integration provides ~21 dB SNR boost.
+  Result: 35+ dB wall SNR, stable peak position (0 cm std across sweeps).
+  range_offset=0.108 calibrates the apparent range to physical distance (42 cm wall → 42 cm displayed).
+  The old tx2_scale compensation (h_cal *= scale) was wrong — normalization is correct approach.
+  blank_range=0.0 (was 1.0, which hid the wall peak entirely from the display).
 FMCW engine uses chirp TX with matched-filter processing gain (28.7 dB over CW); same stepped-freq IFFT for range.
 Next steps: OptiFlow pipeline, SAR reconstruction integration.

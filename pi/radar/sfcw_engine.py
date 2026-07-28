@@ -31,10 +31,11 @@ class SFCWEngine:
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 8
-        self.range_offset = 0.55
-        self.max_display_range = 2.5
-        self.blank_range = 0.5
+        self.range_offset = 0.108
+        self.max_display_range = 3.0
+        self.blank_range = 0.0
         self.coherent_avg = 4
+        self.tx_headroom_db = 16
         # Gain table (loaded from disk)
         self._gain_table = None  # dict: freq_hz, tx_gain, rx_gain, tx2_scale, phase_std_deg
         self._load_gain_table()
@@ -580,6 +581,8 @@ class SFCWEngine:
                 self.coherent_avg = max(1, int(kwargs['coherent_avg']))
                 self._h_avg_accum = None
                 self._h_avg_count = 0
+            if 'tx_headroom_db' in kwargs:
+                self.tx_headroom_db = max(0, int(kwargs['tx_headroom_db']))
 
     def get_params(self):
         return {
@@ -603,6 +606,7 @@ class SFCWEngine:
             'mean_count': self._mean_count,
             'gain_table_loaded': self._gain_table is not None,
             'gain_table_entries': len(self._gain_table['freq_hz']) if self._gain_table else 0,
+            'tx_headroom_db': self.tx_headroom_db,
         }
 
     # ------------------------------------------------------------------
@@ -812,24 +816,35 @@ class SFCWEngine:
 
         has_table = self._gain_table is not None
 
+        headroom = self.tx_headroom_db
+        headroom_linear = 10 ** (-headroom / 20.0)
+
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
 
-            if has_table:
-                tx_g, rx_g, scale = self._lookup_table(f)
-                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
-                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, tx_g)
-                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
-                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
-                self.driver._tx2_digital_scale = scale
-
+            # Set frequency before gain to avoid momentary overload
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            if has_table:
+                tx_g, rx_g, scale = self._lookup_table(f)
+                # Apply TX headroom: reduce TX power to prevent RX clipping
+                # from wall reflections adding to antenna coupling.
+                # Table was calibrated for coupling-only; reflections add signal.
+                tx_g_adj = max(25, tx_g - headroom)
+                scale_adj = scale * headroom_linear
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g_adj)
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, tx_g_adj)
+                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
+                libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
+                self.driver._tx2_digital_scale = scale_adj
+
             time.sleep(settle)
 
+            # Discard first buffer after freq/gain change (may contain transient)
             self._rx_event.clear()
             self._rx_event.wait(timeout=1.0)
 
@@ -845,13 +860,16 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        # Phase-reference division
+        # Phase-reference division: cancels PLL phase noise + TX/RX gain.
+        # Result: h_cal = antenna_H(f) / (tx2_scale(f) * cable_H(f))
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        # Coherent averaging: accumulate H(f) across sweeps
+        # Coherent averaging on raw division (before normalization).
+        # Averaging complex phasors improves SNR: signal bins stay coherent,
+        # noise bins cancel. Do NOT normalize before averaging.
         if self._h_avg_accum is None or len(self._h_avg_accum) != num_steps:
             self._h_avg_accum = h_cal.copy()
             self._h_avg_count = 1
@@ -886,6 +904,18 @@ class SFCWEngine:
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
             h_proc, _ = self._aligned_subtraction(h_averaged, self._reference, freqs, step)
 
+        # Spectral normalization: flatten amplitude envelope, preserve phase.
+        # The gain table injects 30+ dB of amplitude variation across frequency
+        # (via 1/tx2_scale). This amplitude ripple creates spurious range peaks.
+        # Normalizing to unit magnitude makes the NDFT purely phase-based:
+        # targets appear via coherent phase slope across frequency bins.
+        # Skip normalization in subtraction modes — the differential amplitude
+        # is meaningful there (represents target change, not system distortion).
+        if self._sub_mode is None:
+            h_mag = np.abs(h_proc)
+            h_mag_safe = np.where(h_mag > 1e-10, h_mag, 1.0)
+            h_proc = h_proc / h_mag_safe
+
         # Filter to only good frequencies (non-clipping reference)
         good_mask = self._good_freq_mask(freqs)
         good_freqs = freqs[good_mask]
@@ -898,8 +928,8 @@ class SFCWEngine:
         residuals = phase_unwrapped - np.polyval(coeffs, np.arange(num_good))
         phase_std = float(np.std(residuals))
 
-        # NDFT range profile from non-uniform good frequencies
-        num_range_bins = num_steps
+        # Range profile via NDFT (uses actual frequencies for correct phase modeling)
+        num_range_bins = 512
         range_profile, distances = self._ndft(h_good, good_freqs, num_range_bins)
         distances = distances - self.range_offset
 
@@ -1041,6 +1071,9 @@ class SFCWEngine:
 
             f = int(freqs[i])
 
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
             if has_table:
                 tx_g, rx_g, scale = self._lookup_table(f)
                 libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
@@ -1049,11 +1082,9 @@ class SFCWEngine:
                 libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
                 self.driver._tx2_digital_scale = scale
 
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             time.sleep(settle)
 
-            # Discard first buffer
+            # Discard first buffer after freq/gain change
             self._rx_event.clear()
             self._rx_event.wait(timeout=1.0)
 

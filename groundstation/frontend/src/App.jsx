@@ -47,12 +47,12 @@ export default function App() {
     stepSize: 10,
     settleTime: 3,
     numBuffers: 8,
-    rangeOffset: 0.55,
-    maxDisplayRange: 2.5,
-    blankRange: 0.5,
+    rangeOffset: 0.108,
+    maxDisplayRange: 3.0,
+    blankRange: 0.0,
     coherentAvg: 4,
-    dbFloor: -60,
-    dbCeil: -10,
+    dbFloor: -55,
+    dbCeil: -5,
   });
 
   // Stepped-Chirp panel params

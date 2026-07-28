@@ -47,11 +47,11 @@ export default function App() {
     stepSize: 10,
     settleTime: 3,
     numBuffers: 8,
-    rangeOffset: 0.108,
+    rangeOffset: -0.13,
     maxDisplayRange: 3.0,
     blankRange: 0.0,
     coherentAvg: 4,
-    dbFloor: -55,
+    dbFloor: -50,
     dbCeil: -5,
   });
 

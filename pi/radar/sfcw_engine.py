@@ -31,7 +31,7 @@ class SFCWEngine:
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 8
-        self.range_offset = 0.108
+        self.range_offset = -0.13
         self.max_display_range = 3.0
         self.blank_range = 0.0
         self.coherent_avg = 4
@@ -904,17 +904,16 @@ class SFCWEngine:
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
             h_proc, _ = self._aligned_subtraction(h_averaged, self._reference, freqs, step)
 
-        # Spectral normalization: flatten amplitude envelope, preserve phase.
-        # The gain table injects 30+ dB of amplitude variation across frequency
-        # (via 1/tx2_scale). This amplitude ripple creates spurious range peaks.
-        # Normalizing to unit magnitude makes the NDFT purely phase-based:
-        # targets appear via coherent phase slope across frequency bins.
-        # Skip normalization in subtraction modes — the differential amplitude
-        # is meaningful there (represents target change, not system distortion).
-        if self._sub_mode is None:
-            h_mag = np.abs(h_proc)
-            h_mag_safe = np.where(h_mag > 1e-10, h_mag, 1.0)
-            h_proc = h_proc / h_mag_safe
+        # Compensate tx2_scale: the sig/ref division injects 1/tx2_scale(f)
+        # into the amplitude (since ref = tx2_scale * cable_H * gains).
+        # Multiply by scale to recover: antenna_H(f) / cable_H(f).
+        # Cable is ~flat for 10cm SMA, so this gives the true scene response.
+        # Note: this only works correctly when RX is NOT clipping (headroom needed).
+        if has_table and self._sub_mode is None:
+            for i in range(num_steps):
+                _, _, scale = self._lookup_table(int(freqs[i]))
+                if scale > 0.001:
+                    h_proc[i] *= scale
 
         # Filter to only good frequencies (non-clipping reference)
         good_mask = self._good_freq_mask(freqs)

@@ -56,13 +56,15 @@ SFCW Gain: Per-frequency lookup table (no runtime AGC, no iterative characteriza
   Key insight: AD9361 gain vs frequency is highly non-linear — must measure empirically.
 SFCW Signal Processing (critical findings):
   Gain table targets RX1=0.9 for coupling-only — wall reflections add signal, causing ADC clipping.
-  Fix: tx_headroom_db reduces TX power during sweeps (16 dB default = eliminates clipping).
-  After sig/ref division, per-bin magnitude normalization (unit magnitude) is applied.
-  This makes the NDFT purely phase-based: targets = coherent phase slope, not amplitude.
-  Processing gain from 139-bin coherent integration provides ~21 dB SNR boost.
-  Result: 35+ dB wall SNR, stable peak position (0 cm std across sweeps).
-  range_offset=0.108 calibrates the apparent range to physical distance (42 cm wall → 42 cm displayed).
-  The old tx2_scale compensation (h_cal *= scale) was wrong — normalization is correct approach.
-  blank_range=0.0 (was 1.0, which hid the wall peak entirely from the display).
+  Fix: tx_headroom_db reduces TX power during sweeps (16 dB default = eliminates clipping in 1-2.38 GHz).
+  After sig/ref division, tx2_scale compensation (h_cal *= scale) removes 1/scale amplitude artifact.
+  This preserves relative target amplitudes — essential for detecting multiple targets at different ranges.
+  Per-bin normalization (unit magnitude) is WRONG for multi-target scenes — it destroys weak targets.
+  Range profile shows: coupling peak at ~66cm (antenna TX-RX leakage, scene-independent) + scene targets.
+  Wall at 170cm detected at ~12 dB SNR. Coupling at ~26 dB SNR. Both stable across sweeps.
+  range_offset=-0.13 calibrates range to physical distance (accounts for cable delay + antenna phase center).
+  blank_range=0.0 (was 1.0, which hid all near-field signals from display).
+  Higher frequencies (>2.38 GHz) have more clipping and worse SNR — stay in 1-2.38 GHz band for now.
+  For in-wall imaging at shorter range, wider bandwidth will improve resolution (3cm at 5 GHz BW).
 FMCW engine uses chirp TX with matched-filter processing gain (28.7 dB over CW); same stepped-freq IFFT for range.
 Next steps: OptiFlow pipeline, SAR reconstruction integration.

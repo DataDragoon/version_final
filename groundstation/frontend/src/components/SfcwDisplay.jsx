@@ -5,6 +5,7 @@ const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
 const TRACE_COLOR = '#D1855C';
 const PEAK_COLOR = '#E5A986';
+const FILL_COLOR = 'rgba(209, 133, 92, 0.15)';
 
 function jet(t) {
   t = Math.max(0, Math.min(1, t));
@@ -17,14 +18,22 @@ function jet(t) {
 
 export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbFloor = -90, dbCeil = -20 }) {
   const rangeCanvasRef = useRef(null);
-  const colormapCanvasRef = useRef(null);
+  const waterfallCanvasRef = useRef(null);
   const animRef = useRef(null);
   const latestResult = useRef(null);
+  const waterfallData = useRef([]);
   const [crosshair, setCrosshair] = useState(null);
 
   useEffect(() => {
     if (sfcwResult) {
       latestResult.current = sfcwResult;
+      // Add to waterfall history
+      if (sfcwResult.magnitudes && sfcwResult.magnitudes.length > 0) {
+        waterfallData.current.push(sfcwResult.magnitudes.slice());
+        if (waterfallData.current.length > 80) {
+          waterfallData.current.shift();
+        }
+      }
     }
   }, [sfcwResult]);
 
@@ -55,12 +64,26 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
     const mags = result.magnitudes;
     const dists = result.distances;
     const n = mags.length;
-    const pad = { top: 24, bottom: 36, left: 52, right: 16 };
+    const pad = { top: 30, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = dbFloor;
-    const magMax = dbCeil;
+    // Auto-scale: use floor/ceil from props but ensure peak is visible
+    const peak = result.peak || {};
+    let magMin = dbFloor;
+    let magMax = dbCeil;
+
+    // If auto-scale would help, tighten around the data
+    const dataMax = Math.max(...mags);
+    const dataMin = Math.min(...mags);
+    if (dataMax > magMax) magMax = Math.ceil(dataMax / 5) * 5 + 5;
+    if (dataMin < magMin) magMin = Math.floor(dataMin / 5) * 5;
+    // Ensure at least 20 dB dynamic range visible
+    if (magMax - magMin < 20) {
+      magMin = magMax - 20;
+    }
+
+    const maxDist = dists[dists.length - 1];
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
@@ -76,61 +99,40 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`${val.toFixed(0)} dB`, pad.left - 6, y + 3);
+      ctx.fillText(`${val.toFixed(0)}`, pad.left - 6, y + 3);
     }
 
-    const maxDist = dists[dists.length - 1];
-    const xTicks = 6;
-    for (let i = 0; i <= xTicks; i++) {
-      const x = pad.left + (i / xTicks) * plotW;
+    // X-axis: distance markers every 0.5m
+    const xStep = 0.5;
+    ctx.fillStyle = '#555555';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    for (let d = 0; d <= maxDist; d += xStep) {
+      const x = pad.left + (d / maxDist) * plotW;
       ctx.beginPath();
       ctx.moveTo(x, pad.top);
       ctx.lineTo(x, h - pad.bottom);
       ctx.stroke();
-      const dist = (i / xTicks) * maxDist;
-      ctx.fillStyle = '#555555';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
+      ctx.fillText(`${d.toFixed(1)}`, x, h - pad.bottom + 14);
     }
 
-    // Reference overlay traces (current & aligned reference — dotted)
-    if (result.ref_trace && result.cur_trace) {
-      const refT = result.ref_trace;
-      const curT = result.cur_trace;
-      const traceN = Math.min(refT.length, n);
-
-      // Current scan (before subtraction) — dotted white
-      ctx.beginPath();
-      ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = '#ffffff55';
-      ctx.lineWidth = 1;
-      for (let i = 0; i < traceN; i++) {
-        const x = pad.left + (i / (n - 1)) * plotW;
-        const y = pad.top + ((magMax - curT[i]) / (magMax - magMin)) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // Aligned reference — dotted cyan
-      ctx.beginPath();
-      ctx.strokeStyle = '#22d3ee55';
-      ctx.lineWidth = 1;
-      for (let i = 0; i < traceN; i++) {
-        const x = pad.left + (i / (n - 1)) * plotW;
-        const y = pad.top + ((magMax - refT[i]) / (magMax - magMin)) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
+    // Filled area under trace
+    ctx.beginPath();
+    ctx.moveTo(pad.left, h - pad.bottom);
+    for (let i = 0; i < n; i++) {
+      const x = pad.left + (i / (n - 1)) * plotW;
+      const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
+      ctx.lineTo(x, Math.min(y, h - pad.bottom));
     }
+    ctx.lineTo(pad.left + plotW, h - pad.bottom);
+    ctx.closePath();
+    ctx.fillStyle = FILL_COLOR;
+    ctx.fill();
 
-    // Trace (subtracted result — solid)
+    // Trace
     ctx.beginPath();
     ctx.strokeStyle = TRACE_COLOR;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 2;
     for (let i = 0; i < n; i++) {
       const x = pad.left + (i / (n - 1)) * plotW;
       const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
@@ -139,25 +141,40 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
     }
     ctx.stroke();
 
-    // Peak
-    let peakIdx = 0;
-    let peakVal = -Infinity;
-    for (let i = 1; i < n; i++) {
-      if (mags[i] > peakVal) {
-        peakVal = mags[i];
-        peakIdx = i;
-      }
+    // Peak marker and annotation
+    if (peak.distance_m !== undefined) {
+      const peakX = pad.left + (peak.distance_m / maxDist) * plotW;
+      const peakY = pad.top + ((magMax - peak.magnitude_db) / (magMax - magMin)) * plotH;
+
+      // Vertical dashed line at peak
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = PEAK_COLOR + '88';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(peakX, pad.top);
+      ctx.lineTo(peakX, h - pad.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Peak dot
+      ctx.beginPath();
+      ctx.arc(peakX, peakY, 5, 0, Math.PI * 2);
+      ctx.fillStyle = PEAK_COLOR;
+      ctx.fill();
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Peak label
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = peakX > w / 2 ? 'right' : 'left';
+      const labelX = peakX > w / 2 ? peakX - 10 : peakX + 10;
+      ctx.fillText(`${peak.distance_m.toFixed(2)} m`, labelX, peakY - 14);
+      ctx.fillStyle = '#aaaaaa';
+      ctx.font = '9px monospace';
+      ctx.fillText(`${peak.magnitude_db.toFixed(1)} dB  SNR ${peak.snr_db.toFixed(0)} dB`, labelX, peakY - 2);
     }
-    const peakX = pad.left + (peakIdx / (n - 1)) * plotW;
-    const peakY = pad.top + ((magMax - peakVal) / (magMax - magMin)) * plotH;
-    ctx.beginPath();
-    ctx.arc(peakX, peakY, 3, 0, Math.PI * 2);
-    ctx.fillStyle = PEAK_COLOR;
-    ctx.fill();
-    ctx.fillStyle = PEAK_COLOR;
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`${dists[peakIdx].toFixed(2)} m`, peakX, peakY - 8);
 
     // Crosshair
     if (crosshair) {
@@ -183,34 +200,53 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
       }
     }
 
-    // Title
+    // Title bar
     ctx.fillStyle = '#666666';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
     ctx.fillText('RANGE PROFILE', pad.left, 14);
+
+    // Info badges
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    let infoX = w - pad.right;
     if (result.range_resolution) {
       ctx.fillStyle = '#444444';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(`Δr=${(result.range_resolution * 100).toFixed(1)}cm`, w - pad.right, 14);
+      ctx.fillText(`Δr=${(result.range_resolution * 100).toFixed(1)}cm`, infoX, 14);
     }
-
-    // Phase coherence indicator
+    if (result.avg_count) {
+      ctx.fillStyle = '#444444';
+      ctx.fillText(`avg=${result.avg_count}`, infoX - 80, 14);
+    }
     if (result.phase_coherence) {
       const pc = result.phase_coherence;
       const color = pc.coherent ? '#4ade80' : '#ef4444';
       ctx.fillStyle = color;
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
       ctx.fillText(
-        `φ σ=${pc.phase_std_deg.toFixed(1)}° ${pc.coherent ? '● COHERENT' : '● INCOHERENT'}`,
-        w - pad.right, 26
+        `φ=${pc.phase_std_deg.toFixed(1)}°`,
+        infoX, 26
       );
     }
+
+    // dB axis label
+    ctx.save();
+    ctx.translate(12, pad.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#444444';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('dB', 0, 0);
+    ctx.restore();
+
+    // Distance axis label
+    ctx.fillStyle = '#444444';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Distance (m)', pad.left + plotW / 2, h - 4);
   }, [crosshair, dbFloor, dbCeil]);
 
-  const drawColormap = useCallback(() => {
-    const canvas = colormapCanvasRef.current;
+  const drawWaterfall = useCallback(() => {
+    const canvas = waterfallCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -224,84 +260,59 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
-    const result = latestResult.current;
-    if (!result || !result.magnitudes || result.magnitudes.length === 0) {
+    const history = waterfallData.current;
+    if (history.length === 0) {
       ctx.fillStyle = '#333333';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('No sweep data', w / 2, h / 2);
+      ctx.fillText('No waterfall data', w / 2, h / 2);
       return;
     }
 
-    const mags = result.magnitudes;
-    const dists = result.distances;
-    const n = mags.length;
-    const pad = { top: 24, bottom: 36, left: 52, right: 16 };
+    const pad = { top: 16, bottom: 4, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
     const dbMin = dbFloor;
     const dbMax = dbCeil;
+    const numRows = history.length;
+    const rowH = plotH / Math.max(numRows, 1);
 
-    // Draw horizontal colormap strip — each bin is a colored column
-    const cellW = plotW / n;
-    for (let i = 0; i < n; i++) {
-      const t = (mags[i] - dbMin) / (dbMax - dbMin);
-      const [r, g, b] = jet(t);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      const x = pad.left + i * cellW;
-      ctx.fillRect(x, pad.top, Math.ceil(cellW) + 1, plotH);
-    }
+    for (let row = 0; row < numRows; row++) {
+      const mags = history[row];
+      const n = mags.length;
+      const cellW = plotW / n;
+      const y = pad.top + (numRows - 1 - row) * rowH;
 
-    // X-axis labels (distance)
-    const maxDist = dists[dists.length - 1];
-    const xTicks = 6;
-    ctx.fillStyle = '#555555';
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'center';
-    for (let i = 0; i <= xTicks; i++) {
-      const x = pad.left + (i / xTicks) * plotW;
-      const dist = (i / xTicks) * maxDist;
-      ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
+      for (let i = 0; i < n; i++) {
+        const t = (mags[i] - dbMin) / (dbMax - dbMin);
+        const [r, g, b] = jet(t);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(pad.left + i * cellW, y, Math.ceil(cellW) + 1, Math.ceil(rowH) + 1);
+      }
     }
-
-    // Color bar legend (vertical, right side)
-    const barW = 10;
-    const barX = w - pad.right + 4;
-    const barH = plotH;
-    for (let i = 0; i < barH; i++) {
-      const t = 1 - i / barH;
-      const [r, g, b] = jet(t);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.fillRect(barX, pad.top + i, barW, 1);
-    }
-    ctx.fillStyle = '#555555';
-    ctx.font = '8px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${dbMax}`, barX, pad.top - 4);
-    ctx.fillText(`${dbMin}`, barX, pad.top + barH + 10);
 
     // Title
     ctx.fillStyle = '#6B9BD2';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('COLORMAP', pad.left, 14);
+    ctx.fillText('WATERFALL', pad.left, 12);
 
     ctx.fillStyle = '#444444';
     ctx.font = '9px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${dbMin} to ${dbMax} dB`, w - pad.right - 16, 14);
+    ctx.fillText(`${numRows} sweeps`, w - pad.right, 12);
   }, [dbFloor, dbCeil]);
 
   useEffect(() => {
     const render = () => {
       drawRange();
-      drawColormap();
+      drawWaterfall();
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawRange, drawColormap]);
+  }, [drawRange, drawWaterfall]);
 
   const handleMouseMove = (e) => {
     const rect = rangeCanvasRef.current?.getBoundingClientRect();
@@ -323,8 +334,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
         </div>
       )}
 
-      {/* Range Profile */}
-      <div className="relative flex-1 min-h-0">
+      {/* Range Profile — 70% */}
+      <div className="relative flex-[7] min-h-0">
         <canvas
           ref={rangeCanvasRef}
           className="absolute inset-0 w-full h-full"
@@ -333,10 +344,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
         />
       </div>
 
-      {/* Colormap strip */}
-      <div className="relative border-t border-white/5" style={{ flex: '0 0 25%' }}>
+      {/* Waterfall — 30% */}
+      <div className="relative flex-[3] min-h-0 border-t border-white/5">
         <canvas
-          ref={colormapCanvasRef}
+          ref={waterfallCanvasRef}
           className="absolute inset-0 w-full h-full"
         />
       </div>

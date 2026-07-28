@@ -10,7 +10,7 @@ const CHIRP_SAMPLE_RATE = 20_000_000;
 const CHIRP_BUFFER_TIME_MS = (CHIRP_SAMPLES / CHIRP_SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, sweepMode, fmcwParams, onFmcwParamsChange }) {
-  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, rangeOffset, dbFloor, dbCeil } = params;
+  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, rangeOffset, dbFloor, dbCeil, maxDisplayRange, blankRange, coherentAvg } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -33,6 +33,9 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       settle_time_ms: overrides.settleTime ?? settleTime,
       num_buffers: overrides.numBuffers ?? numBuffers,
       range_offset: overrides.rangeOffset ?? rangeOffset,
+      max_display_range: overrides.maxDisplayRange ?? maxDisplayRange,
+      blank_range: overrides.blankRange ?? blankRange,
+      coherent_avg: overrides.coherentAvg ?? coherentAvg,
     });
   };
 
@@ -155,6 +158,24 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
               </span>
             </div>
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Blank"
+                value={blankRange}
+                unit="m"
+                onChange={(v) => { update('blankRange', v); sendParams({ blankRange: v }); }}
+                min={0}
+                max={5}
+              />
+              <EditableField
+                label="Max Range"
+                value={maxDisplayRange}
+                unit="m"
+                onChange={(v) => { update('maxDisplayRange', v); sendParams({ maxDisplayRange: v }); }}
+                min={0.5}
+                max={15}
+              />
+            </div>
             <EditableField
               label="Range Offset"
               value={rangeOffset}
@@ -162,6 +183,14 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               onChange={(v) => { update('rangeOffset', v); sendParams({ rangeOffset: v }); }}
               min={0}
               max={10}
+            />
+            <EditableField
+              label="Coherent Avg"
+              value={coherentAvg}
+              unit="sweeps"
+              onChange={(v) => { update('coherentAvg', v); sendParams({ coherentAvg: v }); }}
+              min={1}
+              max={32}
             />
             <div className="grid grid-cols-2 gap-2">
               <EditableField

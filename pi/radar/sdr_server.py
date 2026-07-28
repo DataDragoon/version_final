@@ -131,6 +131,12 @@ class SDRServer:
                     params['num_buffers'] = int(cmd['num_buffers'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
+                if 'max_display_range' in cmd:
+                    params['max_display_range'] = float(cmd['max_display_range'])
+                if 'blank_range' in cmd:
+                    params['blank_range'] = float(cmd['blank_range'])
+                if 'coherent_avg' in cmd:
+                    params['coherent_avg'] = int(cmd['coherent_avg'])
                 needs_restart = self.sfcw.running and any(
                     k in params for k in ('start_freq', 'stop_freq', 'step_size')
                 )
@@ -492,6 +498,12 @@ class SDRServer:
                     'num_steps': data['num_steps'],
                     'timestamp': data['timestamp'],
                 }
+                if 'peak' in data:
+                    result_msg['peak'] = data['peak']
+                if 'avg_count' in data:
+                    result_msg['avg_count'] = data['avg_count']
+                if 'magnitudes_linear' in data:
+                    result_msg['magnitudes_linear'] = [round(m, 6) for m in data['magnitudes_linear']]
                 if 'phase_coherence' in data:
                     result_msg['phase_coherence'] = data['phase_coherence']
                 if 'ref_trace' in data:

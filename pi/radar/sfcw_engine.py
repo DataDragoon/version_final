@@ -32,6 +32,9 @@ class SFCWEngine:
         self.settle_time = 0.003
         self.num_buffers = 8
         self.range_offset = 0.55
+        self.max_display_range = 2.5
+        self.blank_range = 0.5
+        self.coherent_avg = 4
         # Gain table (loaded from disk)
         self._gain_table = None  # dict: freq_hz, tx_gain, rx_gain, tx2_scale, phase_std_deg
         self._load_gain_table()
@@ -47,6 +50,8 @@ class SFCWEngine:
         self._capture_reference = False
         self._sub_mode = None  # 'background' | 'reference' | None
         self._cal_mode = None
+        self._h_avg_accum = None
+        self._h_avg_count = 0
         # Hardware calibration data (loaded from disk)
         self._cal_cable_thru = None
         self._cal_free_space = None
@@ -567,6 +572,14 @@ class SFCWEngine:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
+            if 'max_display_range' in kwargs:
+                self.max_display_range = float(kwargs['max_display_range'])
+            if 'blank_range' in kwargs:
+                self.blank_range = float(kwargs['blank_range'])
+            if 'coherent_avg' in kwargs:
+                self.coherent_avg = max(1, int(kwargs['coherent_avg']))
+                self._h_avg_accum = None
+                self._h_avg_count = 0
 
     def get_params(self):
         return {
@@ -576,6 +589,9 @@ class SFCWEngine:
             'settle_time': self.settle_time,
             'num_buffers': self.num_buffers,
             'range_offset': self.range_offset,
+            'max_display_range': self.max_display_range,
+            'blank_range': self.blank_range,
+            'coherent_avg': self.coherent_avg,
             'num_steps': self.num_steps,
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
@@ -760,17 +776,17 @@ class SFCWEngine:
     def _ndft(self, h_cal, freqs, num_range_bins):
         """Non-uniform DFT: compute range profile from arbitrary frequency samples.
 
-        Maps measured H(f) at non-uniform frequencies to uniform range bins
-        without approximation.
+        Matched filter: for each candidate range bin, correlate H(f) with the
+        expected phase progression exp(+j*2pi*f*2d/c). This is exact regardless
+        of frequency spacing.
         """
         max_range = SPEED_OF_LIGHT / (2 * self.step_size)
         ranges = np.linspace(0, max_range, num_range_bins)
-        tau = 2 * ranges / SPEED_OF_LIGHT  # round-trip delay per range bin
+        tau = 2 * ranges / SPEED_OF_LIGHT
 
-        # kernel[r, f] = exp(-j * 2pi * freq * tau)
-        kernel = np.exp(-1j * 2 * np.pi * freqs[None, :] * tau[:, None])
+        kernel = np.exp(+1j * 2 * np.pi * freqs[None, :] * tau[:, None])
         window = np.hanning(len(freqs))
-        range_profile = kernel @ (h_cal * window)
+        range_profile = kernel @ (h_cal * window) / len(freqs)
         return range_profile, ranges
 
     def _perform_sweep(self):
@@ -780,6 +796,8 @@ class SFCWEngine:
             step = self.step_size
             settle = self.settle_time
             num_buffers = self.num_buffers
+            max_disp = self.max_display_range
+            avg_count = self.coherent_avg
 
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
@@ -833,30 +851,45 @@ class SFCWEngine:
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
+        # Coherent averaging: accumulate H(f) across sweeps
+        if self._h_avg_accum is None or len(self._h_avg_accum) != num_steps:
+            self._h_avg_accum = h_cal.copy()
+            self._h_avg_count = 1
+        else:
+            self._h_avg_count += 1
+            if self._h_avg_count > avg_count:
+                alpha = 1.0 / avg_count
+                self._h_avg_accum = (1 - alpha) * self._h_avg_accum + alpha * h_cal
+            else:
+                self._h_avg_accum = (self._h_avg_accum * (self._h_avg_count - 1) + h_cal) / self._h_avg_count
+
+        h_averaged = self._h_avg_accum.copy()
+
         # Capture reference (wall-aligned subtraction)
         if self._capture_reference:
-            self._reference = h_cal.copy()
+            self._reference = h_averaged.copy()
             self._capture_reference = False
             self._background = None
             self._sub_mode = 'reference'
 
         # Capture background (static subtraction)
         if self._capture_background:
-            self._background = h_cal.copy()
+            self._background = h_averaged.copy()
             self._capture_background = False
             self._reference = None
             self._sub_mode = 'background'
 
         # Apply subtraction on full grid (before filtering)
+        h_proc = h_averaged
         if self._sub_mode == 'background' and self._background is not None and len(self._background) == num_steps:
-            h_cal = h_cal - self._background
+            h_proc = h_averaged - self._background
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
-            h_cal, _ = self._aligned_subtraction(h_cal, self._reference, freqs, step)
+            h_proc, _ = self._aligned_subtraction(h_averaged, self._reference, freqs, step)
 
         # Filter to only good frequencies (non-clipping reference)
         good_mask = self._good_freq_mask(freqs)
         good_freqs = freqs[good_mask]
-        h_good = h_cal[good_mask]
+        h_good = h_proc[good_mask]
         num_good = int(np.sum(good_mask))
 
         # Phase coherence diagnostics (on good frequencies only)
@@ -870,36 +903,58 @@ class SFCWEngine:
         range_profile, distances = self._ndft(h_good, good_freqs, num_range_bins)
         distances = distances - self.range_offset
 
-        magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
+        magnitude_linear = np.abs(range_profile)
+        magnitude_db = 20 * np.log10(magnitude_linear + 1e-12)
 
         half = num_range_bins // 2
         magnitude_db = magnitude_db[:half]
+        magnitude_linear = magnitude_linear[:half]
         distances = distances[:half]
 
-        # Clip to positive distances
-        positive_mask = distances >= 0
-        magnitude_db = magnitude_db[positive_mask]
-        distances = distances[positive_mask]
+        # Clip to blank_range..max_display_range
+        blank = self.blank_range
+        display_mask = (distances >= blank) & (distances <= max_disp)
+        magnitude_db = magnitude_db[display_mask]
+        magnitude_linear = magnitude_linear[display_mask]
+        distances = distances[display_mask]
+
+        # Peak detection
+        if len(magnitude_db) > 0:
+            peak_idx = int(np.argmax(magnitude_db))
+            peak_db = float(magnitude_db[peak_idx])
+            peak_dist = float(distances[peak_idx])
+            noise_floor = float(np.median(np.sort(magnitude_db)[:len(magnitude_db) // 2]))
+            snr = peak_db - noise_floor
+        else:
+            peak_idx = 0
+            peak_db = -100.0
+            peak_dist = 0.0
+            noise_floor = -100.0
+            snr = 0.0
 
         result = {
             'type': 'range_profile',
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
+            'magnitudes_linear': magnitude_linear.tolist(),
             'range_resolution': SPEED_OF_LIGHT / (2 * (stop - start)),
-            'max_range': SPEED_OF_LIGHT / (2 * step) / 2,
+            'max_range': max_disp,
             'num_steps': num_steps,
             'num_good': num_good,
+            'avg_count': min(self._h_avg_count, avg_count),
             'timestamp': time.time(),
+            'peak': {
+                'distance_m': peak_dist,
+                'magnitude_db': peak_db,
+                'snr_db': snr,
+                'noise_floor_db': noise_floor,
+            },
             'phase_coherence': {
                 'phase_std_rad': phase_std,
                 'phase_std_deg': float(np.degrees(phase_std)),
                 'coherent': phase_std < 0.3,
                 'slope_rad_per_step': float(coeffs[0]),
             },
-            'h_cal_real': h_cal.real.tolist(),
-            'h_cal_imag': h_cal.imag.tolist(),
-            'freqs': freqs.tolist(),
-            'good_mask': good_mask.tolist(),
         }
 
         return result

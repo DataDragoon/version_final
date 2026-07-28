@@ -42,14 +42,17 @@ export default function App() {
 
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
-    startFreq: 2000,
-    stopFreq: 5000,
-    stepSize: 20,
+    startFreq: 1000,
+    stopFreq: 2380,
+    stepSize: 10,
     settleTime: 3,
     numBuffers: 8,
     rangeOffset: 0.55,
+    maxDisplayRange: 2.5,
+    blankRange: 0.5,
+    coherentAvg: 4,
     dbFloor: -60,
-    dbCeil: 20,
+    dbCeil: -10,
   });
 
   // Stepped-Chirp panel params

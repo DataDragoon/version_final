@@ -83,7 +83,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
       magMin = magMax - 20;
     }
 
+    const minDist = dists[0];
     const maxDist = dists[dists.length - 1];
+    const distSpan = maxDist - minDist;
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
@@ -107,8 +109,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
     ctx.fillStyle = '#555555';
     ctx.font = '9px monospace';
     ctx.textAlign = 'center';
-    for (let d = 0; d <= maxDist; d += xStep) {
-      const x = pad.left + (d / maxDist) * plotW;
+    const firstTick = Math.ceil(minDist / xStep) * xStep;
+    for (let d = firstTick; d <= maxDist; d += xStep) {
+      const x = pad.left + ((d - minDist) / distSpan) * plotW;
       ctx.beginPath();
       ctx.moveTo(x, pad.top);
       ctx.lineTo(x, h - pad.bottom);
@@ -143,7 +146,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
 
     // Peak marker and annotation
     if (peak.distance_m !== undefined) {
-      const peakX = pad.left + (peak.distance_m / maxDist) * plotW;
+      const peakX = pad.left + ((peak.distance_m - minDist) / distSpan) * plotW;
       const peakY = pad.top + ((magMax - peak.magnitude_db) / (magMax - magMin)) * plotH;
 
       // Vertical dashed line at peak

@@ -129,23 +129,10 @@ class SDRServer:
                     params['settle_time'] = float(cmd['settle_time_ms']) / 1000
                 if 'num_buffers' in cmd:
                     params['num_buffers'] = int(cmd['num_buffers'])
-                if 'tx1_gain' in cmd:
-                    params['tx1_gain'] = int(cmd['tx1_gain'])
-                if 'rx1_gain' in cmd:
-                    params['rx1_gain'] = int(cmd['rx1_gain'])
-                if 'tx2_gain' in cmd:
-                    params['tx2_gain'] = int(cmd['tx2_gain'])
-                if 'rx2_gain' in cmd:
-                    params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
-                if 'agc_enabled' in cmd:
-                    params['agc_enabled'] = bool(cmd['agc_enabled'])
-                if 'agc_target' in cmd:
-                    params['agc_target'] = float(cmd['agc_target'])
                 needs_restart = self.sfcw.running and any(
-                    k in params for k in ('tx1_gain', 'rx1_gain', 'tx2_gain', 'rx2_gain',
-                                          'start_freq', 'stop_freq', 'step_size')
+                    k in params for k in ('start_freq', 'stop_freq', 'step_size')
                 )
                 self.sfcw.set_params(**params)
                 if needs_restart:
@@ -195,11 +182,24 @@ class SDRServer:
                 self.sfcw.reset_mean()
                 await self._broadcast_sfcw_status()
 
-            elif action == 'sfcw_recharacterize':
-                self.sfcw.invalidate_characterization()
+            elif action == 'sfcw_generate_table':
                 if self.sfcw.running:
                     self.sfcw.stop()
-                    self.sfcw.start(self._sfcw_callback)
+                self._stop_all_streams()
+                await self._broadcast_status()
+                self.sfcw.generate_gain_table(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_verify_table':
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                self._stop_all_streams()
+                await self._broadcast_status()
+                self.sfcw.verify_gain_table(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_reload_table':
+                self.sfcw._load_gain_table()
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_get_status':
@@ -501,9 +501,9 @@ class SDRServer:
                     result_msg['h_cal_real'] = [round(v, 8) for v in data['h_cal_real']]
                     result_msg['h_cal_imag'] = [round(v, 8) for v in data['h_cal_imag']]
                     result_msg['freqs'] = data['freqs']
-                if 'agc_log' in data:
-                    result_msg['agc_log'] = data['agc_log']
                 msg = json.dumps(result_msg)
+            elif isinstance(data, dict) and data.get('type') in ('table_complete', 'verify_complete'):
+                msg = json.dumps(data, default=_json_default)
             elif isinstance(data, dict) and data.get('type') == 'hwcal_result':
                 msg = json.dumps(data)
             elif isinstance(data, dict) and data.get('type') == 'fmcw_test_result':

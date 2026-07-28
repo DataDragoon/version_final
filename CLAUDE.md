@@ -44,14 +44,15 @@ RF Calib panel provides signal generator + oscilloscope for bladeRF calibration 
 SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py / fmcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
-SFCW AGC: Characterization-based gain profile (not runtime AGC).
-  Iterative characterization (5-pass max) measures actual magnitude at each freq step, refines TX+RX1 gains.
-  Profile saved to pi/calibration/gain_profile.npz — loads on startup, ~18s sweep (vs 100s first-time characterization).
-  TX1=TX2 gain-tracking + digital attenuation on TX2 (0.05 scale) to prevent cable saturation.
-  Same analog gain register on both TX channels → identical phase response → cancels in signal/reference division.
-  TX gain varied per-step for real SNR improvement (39-66 dB); RX1 also adjustable (17-58 dB) for fine-tuning.
-  Only RX1 gain changes need post-compensation (TX cancels). RX2=30 fixed for reference channel.
-  Key insight: AD9361 gain vs frequency is highly non-linear — must measure empirically, not assume dB linearity.
-  Recharacterize via WebSocket cmd 'sfcw_recharacterize', or auto-triggers on freq param changes.
+SFCW Gain: Per-frequency lookup table (no runtime AGC, no iterative characterization).
+  Table generated once via 'sfcw_generate_table' WebSocket cmd — tunes each freq independently (1-6 GHz, 10 MHz steps, 501 entries).
+  Per entry: tx_gain, rx_gain, tx2_scale, phase_std_deg. Stored at pi/calibration/gain_table.npz.
+  TX1=TX2 gain (same register) — phase cancels in signal/reference division.
+  RX1=RX2 gain (same register) — phase cancels in signal/reference division.
+  TX2 digital scale prevents cable saturation (binary-searched to land RX2 at ~0.9).
+  Algorithm: ramp TX 25→66, then RX 25→60 until RX1≈0.9; back off if overshoot.
+  During sweep, table lookup replaces per-step gain — no AGC, no compensation needed.
+  Verify via 'sfcw_verify_table' cmd. Reload via 'sfcw_reload_table'.
+  Key insight: AD9361 gain vs frequency is highly non-linear — must measure empirically.
 FMCW engine uses chirp TX with matched-filter processing gain (28.7 dB over CW); same stepped-freq IFFT for range.
 Next steps: OptiFlow pipeline, SAR reconstruction integration.

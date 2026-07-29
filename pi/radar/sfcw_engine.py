@@ -495,41 +495,6 @@ class SFCWEngine:
         phase_interp = np.interp(target_freqs, cal_freqs, cal_phase)
         return mag_interp * np.exp(1j * phase_interp)
 
-    def _aligned_subtraction(self, h_current, h_reference, freqs, step_size):
-        """Subtract reference after aligning to the dominant reflector (wall)."""
-        n = len(h_current)
-        ref_mag = np.abs(h_reference)
-        valid = ref_mag > np.max(ref_mag) * 0.01
-        ratio = np.ones(n, dtype=np.complex128)
-        ratio[valid] = h_current[valid] / h_reference[valid]
-
-        weights = ref_mag / (np.max(ref_mag) + 1e-12)
-        indices = np.arange(n, dtype=np.float64)
-        phase_ratio = np.unwrap(np.angle(ratio))
-
-        w = weights
-        sum_w = np.sum(w)
-        if sum_w < 1e-12:
-            return h_current - h_reference, h_reference
-
-        mean_x = np.sum(w * indices) / sum_w
-        mean_y = np.sum(w * phase_ratio) / sum_w
-        cov_xy = np.sum(w * (indices - mean_x) * (phase_ratio - mean_y))
-        var_x = np.sum(w * (indices - mean_x)**2)
-
-        if var_x < 1e-12:
-            return h_current - h_reference, h_reference
-
-        slope = cov_xy / var_x
-        intercept = mean_y - slope * mean_x
-
-        ratio_mag = np.abs(ratio)
-        amp_scale = np.sum(w * ratio_mag) / sum_w
-
-        correction = amp_scale * np.exp(1j * (slope * indices + intercept))
-        h_ref_aligned = h_reference * correction
-
-        return h_current - h_ref_aligned, h_ref_aligned
 
     # ------------------------------------------------------------------
     # Properties
@@ -902,7 +867,7 @@ class SFCWEngine:
         if self._sub_mode == 'background' and self._background is not None and len(self._background) == num_steps:
             h_proc = h_averaged - self._background
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
-            h_proc, _ = self._aligned_subtraction(h_averaged, self._reference, freqs, step)
+            h_proc = h_averaged - self._reference
 
         # Compensate tx2_scale: the sig/ref division injects 1/tx2_scale(f)
         # into the amplitude (since ref = tx2_scale * cable_H * gains).

@@ -35,7 +35,7 @@ class SFCWEngine:
         self.max_display_range = 3.0
         self.blank_range = 0.0
         self.coherent_avg = 4
-        self.tx_headroom_db = 16
+        self.tx_headroom_db = 0
         # Gain table (loaded from disk)
         self._gain_table = None  # dict: freq_hz, tx_gain, rx_gain, tx2_scale, phase_std_deg
         self._load_gain_table()
@@ -730,15 +730,15 @@ class SFCWEngine:
     # ------------------------------------------------------------------
 
     def _good_freq_mask(self, freqs):
-        """Return boolean mask of frequencies with valid (non-clipping) reference channel."""
+        """Return boolean mask of frequencies with stable phase during calibration."""
         if self._gain_table is None:
             return np.ones(len(freqs), dtype=bool)
         tbl_freqs = self._gain_table['freq_hz']
-        tbl_scale = self._gain_table['tx2_scale']
+        tbl_phase = self._gain_table['phase_std_deg']
         mask = np.ones(len(freqs), dtype=bool)
         for i, f in enumerate(freqs):
             idx = np.argmin(np.abs(tbl_freqs - f))
-            if tbl_scale[idx] <= 0.002:
+            if tbl_phase[idx] > 5.0:
                 mask[i] = False
         return mask
 
@@ -781,31 +781,22 @@ class SFCWEngine:
 
         has_table = self._gain_table is not None
 
-        headroom = self.tx_headroom_db
-        headroom_linear = 10 ** (-headroom / 20.0)
-
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
 
-            # Set frequency before gain to avoid momentary overload
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             if has_table:
                 tx_g, rx_g, scale = self._lookup_table(f)
-                # Apply TX headroom: reduce TX power to prevent RX clipping
-                # from wall reflections adding to antenna coupling.
-                # Table was calibrated for coupling-only; reflections add signal.
-                tx_g_adj = max(25, tx_g - headroom)
-                scale_adj = scale * headroom_linear
-                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g_adj)
-                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, tx_g_adj)
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, tx_g)
+                libbladeRF.bladerf_set_gain(dev_ptr, tx_ch1, tx_g)
                 libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, rx_g)
                 libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, rx_g)
-                self.driver._tx2_digital_scale = scale_adj
+                self.driver._tx2_digital_scale = scale
 
             time.sleep(settle)
 
@@ -869,16 +860,9 @@ class SFCWEngine:
         elif self._sub_mode == 'reference' and self._reference is not None and len(self._reference) == num_steps:
             h_proc = h_averaged - self._reference
 
-        # Compensate tx2_scale: the sig/ref division injects 1/tx2_scale(f)
-        # into the amplitude (since ref = tx2_scale * cable_H * gains).
-        # Multiply by scale to recover: antenna_H(f) / cable_H(f).
-        # Cable is ~flat for 10cm SMA, so this gives the true scene response.
-        # Note: this only works correctly when RX is NOT clipping (headroom needed).
-        if has_table and self._sub_mode is None:
-            for i in range(num_steps):
-                _, _, scale = self._lookup_table(int(freqs[i]))
-                if scale > 0.001:
-                    h_proc[i] *= scale
+        # Scale compensation removed: with wall-present calibration and no headroom,
+        # the sig/ref division directly gives the scene transfer function.
+        # The per-frequency scale only prevents RX2 clipping — it divides out in sig/ref.
 
         # Filter to only good frequencies (non-clipping reference)
         good_mask = self._good_freq_mask(freqs)

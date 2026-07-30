@@ -230,6 +230,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, dbF
         infoX, 26
       );
     }
+    if (result.num_good != null && result.num_steps) {
+      ctx.fillStyle = result.num_good === result.num_steps ? '#4ade80' : '#facc15';
+      ctx.fillText(`bins=${result.num_good}/${result.num_steps}`, infoX, 38);
+    }
 
     // dB axis label
     ctx.save();

@@ -772,6 +772,7 @@ class SFCWEngine:
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
         h_signal = np.zeros(num_steps, dtype=np.complex128)
         h_reference = np.zeros(num_steps, dtype=np.complex128)
+        clipped = np.zeros(num_steps, dtype=bool)
 
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
@@ -805,6 +806,45 @@ class SFCWEngine:
             self._rx_event.wait(timeout=1.0)
 
             sig, ref, rx1_peak, rx2_peak = self._measure_step(num_buffers)
+
+            # Validate: no clipping, and phase is stable (two measurements agree)
+            valid_bin = True
+            if rx1_peak > 0.98 or rx2_peak > 0.98:
+                valid_bin = False
+            elif abs(ref) > 1e-10:
+                # Quick phase check: take a second measurement
+                sig2, ref2, _, _ = self._measure_step(num_buffers)
+                if abs(ref2) > 1e-10:
+                    h1 = sig / ref
+                    h2 = sig2 / ref2
+                    phase_diff = abs(np.angle(h2 / h1))
+                    if phase_diff > 0.087:  # ~5 degrees
+                        valid_bin = False
+
+            # Retry up to 2 times if invalid
+            if not valid_bin:
+                for _retry in range(2):
+                    if has_table and rx2_peak > 0.98:
+                        self.driver._tx2_digital_scale = self.driver._tx2_digital_scale * 0.5
+                    time.sleep(settle)
+                    self._rx_event.clear()
+                    self._rx_event.wait(timeout=1.0)
+                    sig, ref, rx1_peak, rx2_peak = self._measure_step(num_buffers)
+                    if rx1_peak > 0.98 or rx2_peak > 0.98:
+                        continue
+                    if abs(ref) > 1e-10:
+                        sig2, ref2, _, _ = self._measure_step(num_buffers)
+                        if abs(ref2) > 1e-10:
+                            h1 = sig / ref
+                            h2 = sig2 / ref2
+                            phase_diff = abs(np.angle(h2 / h1))
+                            if phase_diff <= 0.087:
+                                valid_bin = True
+                                break
+
+            if not valid_bin:
+                clipped[i] = True
+
             h_signal[i] = sig
             h_reference[i] = ref
 
@@ -864,8 +904,8 @@ class SFCWEngine:
         # the sig/ref division directly gives the scene transfer function.
         # The per-frequency scale only prevents RX2 clipping — it divides out in sig/ref.
 
-        # Filter to only good frequencies (non-clipping reference)
-        good_mask = self._good_freq_mask(freqs)
+        # Filter: combine calibration quality mask with runtime clipping/phase check
+        good_mask = self._good_freq_mask(freqs) & ~clipped
         good_freqs = freqs[good_mask]
         h_good = h_proc[good_mask]
         num_good = int(np.sum(good_mask))

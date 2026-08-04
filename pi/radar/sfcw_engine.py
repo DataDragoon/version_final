@@ -182,6 +182,9 @@ class SFCWEngine:
         libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch0, libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch1, libbladeRF.BLADERF_GAIN_MGC)
 
+        # One-shot cal before gain table generation (tracking stays disabled)
+        self.driver.run_oneshot_calibration()
+
         for i in range(num_entries):
             if self._stop_event.is_set():
                 if callback:
@@ -382,6 +385,8 @@ class SFCWEngine:
 
         libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch0, libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch1, libbladeRF.BLADERF_GAIN_MGC)
+
+        self.driver.run_oneshot_calibration()
 
         rx1_mags = np.zeros(num_entries)
         rx2_mags = np.zeros(num_entries)
@@ -684,6 +689,9 @@ class SFCWEngine:
         dev_ptr = self.driver.device.dev[0]
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
+
+        # One-shot cal at sweep center freq before starting (tracking stays disabled)
+        self.driver.run_oneshot_calibration()
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
@@ -1028,6 +1036,8 @@ class SFCWEngine:
         dev_ptr = self.driver.device.dev[0]
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
         libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
+
+        self.driver.run_oneshot_calibration()
 
     def _perform_calibration_sweep(self):
         """Perform a single sweep collecting raw complex data for calibration."""

@@ -106,6 +106,9 @@ def main():
     libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch0, libbladeRF.BLADERF_GAIN_MGC)
     libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch1, libbladeRF.BLADERF_GAIN_MGC)
 
+    # One-shot cal before generation (tracking stays disabled from open())
+    engine.driver.run_oneshot_calibration()
+
     t_start = time.time()
     problems = 0
 

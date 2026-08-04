@@ -54,6 +54,12 @@ SFCW Gain: Per-frequency lookup table (no runtime AGC, no iterative characteriza
   During sweep, table lookup with tx_headroom_db=16 (prevents RX clipping from wall reflections).
   Verify via 'sfcw_verify_table' cmd. Reload via 'sfcw_reload_table'.
   Key insight: AD9361 gain vs frequency is highly non-linear — must measure empirically.
+AD9361 Determinism: Tracking calibrations disabled at driver init for repeatable measurements.
+  Problem: AD9361 runs continuous background tracking (RX quad, BBDC, RFDC) that randomly adjusts
+  IQ correction coefficients between captures — causes non-deterministic amplitude/phase even with fixed gains.
+  Fix: One-shot calibration at init (reg 0x016=0x32), then freeze by clearing reg 0x16B bit 0 (quad)
+  and reg 0x16A bits 0,1 (BBDC+RFDC). One-shot re-triggered at each sweep start for fresh coefficients.
+  bladerf_driver.py exposes run_oneshot_calibration() for use before any measurement campaign.
 SFCW Signal Processing (critical findings):
   Gain table targets RX1=0.9 for coupling-only — wall reflections add signal, causing ADC clipping.
   Fix: tx_headroom_db reduces TX power during sweeps (16 dB default = eliminates clipping in 1-2.38 GHz).

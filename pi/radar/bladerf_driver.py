@@ -1,5 +1,6 @@
 """bladeRF hardware abstraction — supports dual TX/RX for SFCW reference channel."""
 
+import time
 import threading
 import numpy as np
 import bladerf
@@ -7,6 +8,10 @@ from bladerf._bladerf import ChannelLayout, Format, ffi, libbladeRF
 
 SCALE = 2047
 MGC = libbladeRF.BLADERF_GAIN_MGC
+
+# AD9361 RFIC registers for tracking calibration control
+_REG_CAL_CONFIG_2 = 0x16A  # Bit 0: BBDC tracking, Bit 1: RFDC tracking
+_REG_CAL_CONFIG_3 = 0x16B  # Bit 0: RX Quadrature tracking
 
 
 class BladeRFDriver:
@@ -40,6 +45,7 @@ class BladeRFDriver:
         self.device = bladerf.BladeRF()
         self.serial = self.device.get_serial()
         self._configure_channels()
+        self._lock_tracking_calibrations()
 
     def close(self):
         self.stop_tx()
@@ -56,6 +62,65 @@ class BladeRFDriver:
         self.serial = self.device.get_serial()
         self._dual_channel = False
         self._last_layout = None
+        self._lock_tracking_calibrations()
+
+    def _lock_tracking_calibrations(self):
+        """Disable AD9361 continuous tracking calibrations for deterministic gain.
+
+        The AD9361 runs background loops that continuously adjust RX quadrature,
+        BB DC offset, and RF DC offset corrections. These cause non-deterministic
+        amplitude/phase variation even with fixed gain registers. We run one-shot
+        calibration at init, then freeze the correction coefficients.
+        """
+        try:
+            # Trigger one-shot RX quadrature calibration before freezing.
+            # AD9361 reg 0x016 (Calibration Control): writing 0x32 triggers
+            # RX quad cal + TX quad cal (one-shot, not tracking).
+            self._write_rfic_reg(0x016, 0x32)
+            time.sleep(0.1)  # Wait for cal to complete
+
+            # Disable RX quadrature tracking (reg 0x16B bit 0)
+            reg_val = self._read_rfic_reg(_REG_CAL_CONFIG_3)
+            reg_val &= ~0x01
+            self._write_rfic_reg(_REG_CAL_CONFIG_3, reg_val)
+
+            # Disable BB DC tracking and RF DC tracking (reg 0x16A bits 0,1)
+            reg_val = self._read_rfic_reg(_REG_CAL_CONFIG_2)
+            reg_val &= ~0x03
+            self._write_rfic_reg(_REG_CAL_CONFIG_2, reg_val)
+
+            print("[bladerf] Tracking calibrations locked (RX quad, BBDC, RFDC disabled)")
+        except RuntimeError as e:
+            print(f"[bladerf] WARNING: Could not lock tracking cals: {e}")
+            print("[bladerf]   Non-deterministic gain behavior may persist")
+
+    def run_oneshot_calibration(self):
+        """Trigger one-shot RX/TX quadrature calibration without enabling tracking.
+
+        Call this before a sweep begins (at the sweep's center frequency) to get
+        fresh IQ correction coefficients. Tracking remains disabled afterward.
+        """
+        try:
+            self._write_rfic_reg(0x016, 0x32)
+            time.sleep(0.1)
+        except RuntimeError:
+            pass
+
+    def _read_rfic_reg(self, addr):
+        """Read AD9361 register via libbladeRF RFIC SPI interface."""
+        dev_ptr = self.device.dev[0]
+        val = ffi.new("uint8_t *")
+        rc = libbladeRF.bladerf_get_rfic_register(dev_ptr, 0, int(addr), val)
+        if rc != 0:
+            raise RuntimeError(f"RFIC read reg 0x{addr:03X} failed: {rc}")
+        return val[0]
+
+    def _write_rfic_reg(self, addr, val):
+        """Write AD9361 register via libbladeRF RFIC SPI interface."""
+        dev_ptr = self.device.dev[0]
+        rc = libbladeRF.bladerf_set_rfic_register(dev_ptr, 0, int(addr), int(val) & 0xFF)
+        if rc != 0:
+            raise RuntimeError(f"RFIC write reg 0x{addr:03X}=0x{val:02X} failed: {rc}")
 
     def _configure_channels(self):
         ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))

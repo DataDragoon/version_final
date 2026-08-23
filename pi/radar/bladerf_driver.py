@@ -122,15 +122,6 @@ class BladeRFDriver:
         if rc != 0:
             raise RuntimeError(f"RFIC write reg 0x{addr:03X}=0x{val:02X} failed: {rc}")
 
-    def get_timestamp(self, direction):
-        """Get current hardware timestamp (in sample counts) for TX or RX direction."""
-        dev_ptr = self.device.dev[0]
-        ts = ffi.new('uint64_t *')
-        rc = libbladeRF.bladerf_get_timestamp(dev_ptr, direction, ts)
-        if rc != 0:
-            raise RuntimeError(f"bladerf_get_timestamp failed: rc={rc}")
-        return ts[0]
-
     def _configure_channels(self):
         ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))
         ch_rx = self.device.Channel(bladerf.CHANNEL_RX(0))
@@ -310,26 +301,10 @@ class BladeRFDriver:
 
     def _rx_loop(self, callback, num_samples):
         buf = bytearray(num_samples * 2 * 2)
-        last_timestamp = None
         try:
             while not self._rx_stop.is_set():
                 self.device.sync_rx(buf, num_samples)
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
-
-                # Get FPGA timestamp for this RX buffer
-                try:
-                    timestamp = self.get_timestamp(bladerf.CHANNEL_RX(0))
-                    if last_timestamp is not None:
-                        gap = timestamp - last_timestamp
-                        expected_gap = num_samples
-                        if gap != expected_gap:
-                            dropped = gap - expected_gap
-                            print(f"[bladerf] WARNING: {dropped} samples dropped (gap={gap}, expected={expected_gap})")
-                    print(f"[bladerf] RX timestamp: {timestamp:,} (+{num_samples} samples)")
-                    last_timestamp = timestamp
-                except Exception as e:
-                    print(f"[bladerf] Timestamp read failed: {e}")
-
                 callback(iq)
         except Exception as e:
             print(f"[bladerf] RX error: {e}")
@@ -450,26 +425,10 @@ class BladeRFDriver:
         # Request num_samples*2 to get num_samples per channel after deinterleave.
         rx_count = num_samples * 2
         buf = bytearray(rx_count * 4 * 2)  # rx_count pairs × 4 int16 × 2 bytes
-        last_timestamp = None
         try:
             while not self._rx_stop.is_set():
                 self.device.sync_rx(buf, rx_count)
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
-
-                # Get FPGA timestamp for this dual-channel RX buffer
-                try:
-                    timestamp = self.get_timestamp(bladerf.CHANNEL_RX(0))
-                    if last_timestamp is not None:
-                        gap = timestamp - last_timestamp
-                        expected_gap = num_samples
-                        if gap != expected_gap:
-                            dropped = gap - expected_gap
-                            print(f"[bladerf] DUAL RX WARNING: {dropped} samples dropped (gap={gap}, expected={expected_gap})")
-                    print(f"[bladerf] DUAL RX timestamp: {timestamp:,} (+{num_samples} samples per channel)")
-                    last_timestamp = timestamp
-                except Exception as e:
-                    print(f"[bladerf] DUAL RX timestamp read failed: {e}")
-
                 # iq has rx_count*4 int16 values: [I1,Q1,I2,Q2, I1,Q1,I2,Q2, ...]
                 # Each channel has rx_count values, but we want num_samples per ch
                 rx1 = np.empty(num_samples * 2, dtype=np.int16)

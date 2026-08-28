@@ -182,13 +182,15 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               value={settleCount}
               unit="buffers"
               onChange={(v) => { update('settleCount', v); sendParams({ settleCount: v }); }}
-              min={1}
+              min={0}
               max={30}
             />
           </div>
           <span className="text-[9px] text-[#333333] leading-tight px-1">
             {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples),
-            averaged over {numBuffers} buffer{numBuffers === 1 ? '' : 's'} — retune settle is {settleCount} buffers first
+            averaged over {numBuffers} buffer{numBuffers === 1 ? '' : 's'} — {settleCount === 0
+              ? 'no buffers discarded after retune'
+              : `retune settle discards ${settleCount} buffers first`}
           </span>
         </div>
         <EditableField

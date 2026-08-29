@@ -586,11 +586,39 @@ in a sweep total and rate. `_phase_stats` reduces each phase to total/mean/min/m
 by summing totals and re-deriving the mean, so the numbers stay honest across an
 averaged capture.
 
-Output goes two places: three `[sfcw]` lines printed per sweep (silence with
-`set_params(timing_log=False)`), and a `timing` key on the `range_profile` payload, so
-the groundstation can display it without another round trip. `_perform_sweep_raw` now
-returns `(h_cal, timing)` — callers must unpack. `benchmark_sweep.py` predates all of
-this and is still broken; the in-engine timing supersedes what it measured.
+Output goes two places: the log described below, and a `timing` key on the
+`range_profile` payload, so the groundstation can display it without another round
+trip. `_perform_sweep_raw` now returns `(h_cal, timing)` — callers must unpack.
+`benchmark_sweep.py` predates all of this and is still broken; the in-engine timing
+supersedes what it measured.
+
+**Log format is ported from `version_bluestar`** so both trees read the same way:
+module-level `_log_timing(event, **details)` / `_log_separator(char)` /
+`_format_duration(seconds)` emit `[HH:MM:SS.ffffff] SFCW | EVENT   k=v` lines. For the
+USB markers (`>>> RX retune CMD SENT` / `<<< RX retune ACK RECEIVED`) the wall-clock
+prefix *is* the measurement — printed at the moment of the event — so the log reads as
+a transaction trace, not just a summary. Structure per sweep:
+
+- `SWEEP START` / `SWEEP END` between `═` separators, with capture vs postproc split.
+- One summary line for **every** step: `Step N f.fffGHz ok= retune_rx= retune_tx=
+  settle= capture= compute= total=`.
+- Verbose per-packet detail for `log_steps` only (steps 0-3, 50, 150, midpoint, last):
+  the retune CMD/ACK markers, each `Pi<<<bladeRF [EP0x81]` buffer tagged
+  `SETTLE(discard)` or `CAPTURE(keep)` with its inter-packet `dt`, and a USB summary.
+- `RETUNE FAILED` is logged on **every** step where `rc != 0` — that step's data is at
+  the previous frequency, and the rc was previously discarded unchecked.
+- `REF DIVISION START/DONE`, then the aggregate `SWEEP TIMING` block (per-step
+  mean/min/max, phase totals, sweep overhead, `SWEEP TOTAL` with rate).
+
+Silence all of it with `set_params(timing_log=False)`, which flips the module-level
+`_TIMING_LOG` (that also drops the `log_steps` set to empty, so the verbose paths cost
+nothing when off). `_emit()` wraps every print: the Pi's journal is UTF-8 and renders
+the `─`/`µ` characters, but a cp1252 console would otherwise raise UnicodeEncodeError
+*inside `_sweep_core`* and kill the sweep, so it falls back to ASCII instead.
+
+Not ported from bluestar: its **pipelined retunes** (issuing step i+1's retune right
+after step i's capture so USB latency overlaps the NumPy work) and its duplicate-buffer
+comparison. Those change sweep behaviour, not just logging.
 
 **Regression, 2026-08-20 to 2026-08-23 (fixed): `num_buffers` default silently dropped
 from 4 to 1, killing per-step noise averaging.** The `c33b0ce` "clean up" commit (same

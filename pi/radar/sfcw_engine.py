@@ -11,12 +11,65 @@ eliminates random PLL phase offsets between TX and RX synthesizers.
 import threading
 import time
 import numpy as np
+from datetime import datetime
 
 from bladerf_driver import BladeRFDriver
 from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
+
+# Sweep logging, ported from version_bluestar's sfcw_engine so both trees read the
+# same way. Every line carries its own microsecond wall-clock prefix — for the USB
+# markers (CMD SENT / ACK RECEIVED) that prefix *is* the measurement, printed at the
+# exact moment of the event, so the log can be read as a transaction trace and not
+# just a summary. Toggle with SFCWEngine.set_params(timing_log=False).
+_TIMING_LOG = True
+
+
+def set_timing_log(enabled):
+    global _TIMING_LOG
+    _TIMING_LOG = bool(enabled)
+
+
+def _emit(line):
+    """print() that degrades to ASCII rather than raising on a non-UTF-8 console.
+
+    The Pi's journal is UTF-8, so the box-drawing and µ characters render there —
+    but a cp1252 console (or LANG=C) would otherwise raise UnicodeEncodeError from
+    inside _sweep_core and take the sweep down with it.
+    """
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode('ascii', 'replace').decode('ascii'), flush=True)
+
+
+def _log_timing(event, **details):
+    """Log timing events in human-readable format."""
+    if not _TIMING_LOG:
+        return
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')  # Microsecond precision
+    detail_str = ' '.join(f'{k}={v}' for k, v in details.items()) if details else ''
+    _emit(f"[{timestamp}] SFCW | {event:<30} {detail_str}")
+
+
+def _log_separator(char='─'):
+    """Print a visual separator line."""
+    if not _TIMING_LOG:
+        return
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')  # Microsecond precision
+    _emit(f"[{timestamp}] SFCW | {char * 70}")
+
+
+def _format_duration(seconds):
+    """Format duration in human-readable way."""
+    if seconds < 0.001:
+        return f"{seconds*1000000:.0f}µs"
+    elif seconds < 1:
+        return f"{seconds*1000:.1f}ms"
+    else:
+        return f"{seconds:.3f}s"
 
 # Master quick-tune table: covers the whole usable band at a fixed grid, generated
 # once per device connection. Any sweep's start/stop/step is snapped onto this grid
@@ -117,6 +170,7 @@ class SFCWEngine:
                 self.settle_count = max(0, int(kwargs['settle_count']))
             if 'timing_log' in kwargs:
                 self.timing_log = bool(kwargs['timing_log'])
+                set_timing_log(self.timing_log)
             if 'tx1_gain' in kwargs:
                 self.tx1_gain = int(kwargs['tx1_gain'])
                 self._gains_dirty = True
@@ -283,7 +337,7 @@ class SFCWEngine:
                             timing['sweep_total_ms'] = round(
                                 (time.perf_counter() - t_capture_start) * 1e3, 3)
                             result['timing'] = timing
-                            self._log_timing(timing, label='warm sweep')
+                            self._log_sweep_summary(timing, label='WARM SWEEP')
                 if result is not None and callback:
                     callback(result)
             except Exception as e:
@@ -537,6 +591,15 @@ class SFCWEngine:
         grid_ms = (time.perf_counter() - t_sweep_start) * 1e3
         num_steps = len(freqs)
 
+        _log_separator('═')
+        _log_timing("SWEEP START",
+                    start=f"{start/1e9:.3f}GHz",
+                    stop=f"{stop/1e9:.3f}GHz",
+                    step=f"{step/1e6:.0f}MHz",
+                    num_steps=num_steps,
+                    num_buffers=num_buffers,
+                    settle_count=settle_count)
+
         def progress(i):
             if self._callback and i % 10 == 0:
                 self._callback({
@@ -546,21 +609,34 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
+        t_capture_start = time.perf_counter()
         h_cal, dropped_steps, timing = self._sweep_core(
             freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        capture_duration = time.perf_counter() - t_capture_start
         if h_cal is None:
             return None
+
+        _log_timing("CAPTURE COMPLETE",
+                    duration=_format_duration(capture_duration),
+                    valid_steps=f"{num_steps-dropped_steps}/{num_steps}")
 
         if dropped_steps > 0:
             print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
         t_process_start = time.perf_counter()
         result = self._process_h_cal(h_cal)
+        postproc_duration = time.perf_counter() - t_process_start
         timing['grid_build_ms'] = round(grid_ms, 3)
-        timing['process_ms'] = round((time.perf_counter() - t_process_start) * 1e3, 3)
+        timing['process_ms'] = round(postproc_duration * 1e3, 3)
         timing['sweep_total_ms'] = round((time.perf_counter() - t_sweep_start) * 1e3, 3)
         result['timing'] = timing
-        self._log_timing(timing)
+
+        self._log_sweep_summary(timing)
+        _log_timing("SWEEP END",
+                    total=_format_duration(timing['sweep_total_ms'] / 1e3),
+                    capture=_format_duration(capture_duration),
+                    postproc=_format_duration(postproc_duration))
+        _log_separator('═')
         return result
 
     def _perform_sweep_raw(self):
@@ -610,6 +686,14 @@ class SFCWEngine:
         stop_event = self._stop_event
 
         dropped_steps = 0
+        retune_failures = 0
+
+        # Verbose per-packet detail only for these steps; every step still gets
+        # a one-line summary with each transaction's time.
+        log_steps = ({0, 1, 2, 3, 50, 150, num_steps // 2, num_steps - 1}
+                     if _TIMING_LOG else frozenset())
+        total_wait = settle_count + num_buffers
+        buf_bytes = 4096 * 2 * 2 * 2  # 4096 samples/ch, 2 ch, I+Q, int16
 
         t_tune_ms = []
         t_settle_ms = []
@@ -625,30 +709,74 @@ class SFCWEngine:
                 return None, 0, None
 
             t_step_start = time.perf_counter()
+            verbose = i in log_steps
 
             f = int(freqs[i])
-            if use_qt:
-                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
-                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
-            else:
-                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             # libbladeRF's retune/set_frequency calls are synchronous: they return
-            # only once the NIOS has acknowledged the command, so this span is the
-            # "tune command sent -> ACK received" time.
+            # only once the NIOS has acknowledged the command, so each span below is
+            # a real "tune command sent -> ACK received" time.
+            if verbose:
+                _log_timing(f"  Step {i:3d} >>> RX retune CMD SENT", freq=f"{f/1e9:.3f}GHz")
+            t_rx_cmd = time.perf_counter()
+            if use_qt:
+                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+            else:
+                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            t_rx_ack = time.perf_counter()
+            if verbose:
+                _log_timing(f"  Step {i:3d} <<< RX retune ACK RECEIVED",
+                            took=_format_duration(t_rx_ack - t_rx_cmd))
+                _log_timing(f"  Step {i:3d} >>> TX retune CMD SENT")
+            if use_qt:
+                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             t_tuned = time.perf_counter()
+            if verbose:
+                _log_timing(f"  Step {i:3d} <<< TX retune ACK RECEIVED",
+                            took=_format_duration(t_tuned - t_rx_ack))
+
+            if rc_rx != 0 or rc_tx != 0:
+                # Always logged, every step: that step's data is at the WRONG
+                # frequency (the Nios rejected the retune, e.g. full queue).
+                retune_failures += 1
+                _log_timing(f"  Step {i:3d} *** RETUNE FAILED",
+                            freq=f"{f/1e9:.3f}GHz", rx_rc=rc_rx, tx_rc=rc_tx,
+                            note="step_data_captured_at_previous_frequency")
+
+            # bladeRF streams continuously on EP0x81 — the Pi sends nothing here,
+            # it just counts arrivals.
+            if verbose:
+                _log_timing(f"  Step {i:3d} ... Pi WAITING (no USB sent)",
+                            waiting_for=f"{settle_count}_buffers_on_EP0x81",
+                            note="bladeRF_streaming_continuously_Pi_just_counts")
+            last_pkt_time = t_tuned
+            pkt_num = 1
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not rx_cond.wait(timeout=1.0):
                         break
+                    if verbose and self._rx_seq <= target_seq:
+                        now = time.perf_counter()
+                        _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
+                                    type="SETTLE(discard)", size=f"{buf_bytes}B",
+                                    dt=_format_duration(now - last_pkt_time))
+                        last_pkt_time = now
+                        pkt_num += 1
                 t_settled = time.perf_counter()
+
+                if verbose:
+                    _log_timing(f"  Step {i:3d}      SETTLE DONE ({settle_count} buffers discarded)",
+                                time=_format_duration(t_settled - t_tuned))
+                    _log_timing(f"  Step {i:3d}      NOW KEEPING next {num_buffers} buffers from EP0x81",
+                                note="noise_averaging")
 
                 sig_bufs = []
                 ref_bufs = []
                 last_seq = self._rx_seq
-                for _ in range(num_buffers):
+                for buf_idx in range(num_buffers):
                     while self._rx_seq <= last_seq:
                         if not rx_cond.wait(timeout=1.0):
                             break
@@ -658,7 +786,24 @@ class SFCWEngine:
                     sig_bufs.append(self._rx_latest[0])
                     ref_bufs.append(self._rx_latest[1])
 
+                    if verbose:
+                        now = time.perf_counter()
+                        _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
+                                    type="CAPTURE(keep)", buf=f"{buf_idx+1}/{num_buffers}",
+                                    size=f"{buf_bytes}B",
+                                    dt=_format_duration(now - last_pkt_time))
+                        last_pkt_time = now
+                        pkt_num += 1
+
             t_received = time.perf_counter()
+
+            if verbose:
+                _log_timing(f"  Step {i:3d}      ALL {len(sig_bufs)}/{total_wait} EP0x81 BUFFERS DONE",
+                            total_time=_format_duration(t_received - t_tuned),
+                            data=f"{len(sig_bufs)*buf_bytes}B_kept_from_bladeRF")
+                _log_timing(f"  Step {i:3d} ... PROCESSING (Pi CPU)",
+                            operation="extract_IQ_via_ref_tone_mixing",
+                            num_buffers=len(sig_bufs), note="no_USB_here")
 
             if sig_bufs:
                 sig_arr = np.asarray(sig_bufs, dtype=np.float64)
@@ -689,18 +834,44 @@ class SFCWEngine:
             t_other_ms.append(step - tune - settle - bufs - noise)
             t_step_ms.append(step)
 
+            # One line for EVERY step: each transaction's time as this step
+            # experienced it.
+            _log_timing(f"  Step {i:3d} {f/1e9:.3f}GHz",
+                        ok="yes" if sig_bufs else "NO_DATA",
+                        retune_rx=_format_duration((t_rx_ack - t_rx_cmd)),
+                        retune_tx=_format_duration((t_tuned - t_rx_ack)),
+                        settle=_format_duration(settle / 1e3),
+                        capture=_format_duration(bufs / 1e3),
+                        compute=_format_duration(noise / 1e3),
+                        total=_format_duration(step / 1e3))
+
+            if verbose:
+                _log_timing(f"  Step {i:3d}     USB summary: 2x Retune OUT(16B)+ACK(16B) "
+                            f"+ {pkt_num - 1}x Bulk IN({buf_bytes}B)")
+                if i < num_steps - 1:
+                    print(flush=True)
+
+        _log_separator('─')
+        _log_timing("REF DIVISION START", valid_steps=f"{num_steps-dropped_steps}/{num_steps}")
         t_ref_start = time.perf_counter()
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
         t_ref_end = time.perf_counter()
+        _log_timing("REF DIVISION DONE", time=_format_duration(t_ref_end - t_ref_start))
+
+        if retune_failures > 0:
+            _log_timing("*** SWEEP HAD RETUNE FAILURES",
+                        failed_steps=f"{retune_failures}/{num_steps}",
+                        note="those_steps_captured_at_wrong_frequency")
 
         timing = {
             'num_steps': num_steps,
             'num_buffers': num_buffers,
             'settle_count': settle_count,
             'dropped_steps': dropped_steps,
+            'retune_failures': retune_failures,
             'per_step_ms': {
                 'tune_ack': self._phase_stats(t_tune_ms),
                 'settle': self._phase_stats(t_settle_ms),
@@ -741,6 +912,7 @@ class SFCWEngine:
             }
         merged['per_step_ms'] = per_step
         merged['dropped_steps'] = sum(t['dropped_steps'] for t in timings)
+        merged['retune_failures'] = sum(t.get('retune_failures', 0) for t in timings)
         merged['ref_divide_ms'] = round(sum(t['ref_divide_ms'] for t in timings), 3)
         merged['steps_total_ms'] = round(sum(t['steps_total_ms'] for t in timings), 3)
         merged['sweep_core_ms'] = round(sum(t['sweep_core_ms'] for t in timings), 3)
@@ -759,9 +931,9 @@ class SFCWEngine:
             'max': round(float(np.max(samples)), 3),
         }
 
-    def _log_timing(self, timing, label='sweep'):
-        """Print the per-step breakdown and the sweep total (3 lines per sweep)."""
-        if not self.timing_log or not timing:
+    def _log_sweep_summary(self, timing, label='SWEEP'):
+        """Per-phase totals for the whole sweep, in the same log format as the steps."""
+        if not timing:
             return
         ps = timing['per_step_ms']
         total_ms = timing.get('sweep_total_ms', timing.get('sweep_core_ms', 0.0))
@@ -769,30 +941,37 @@ class SFCWEngine:
 
         def trio(key):
             s = ps[key]
-            return f"{s['mean']:.3f}/{s['min']:.3f}/{s['max']:.3f}"
+            return (f"{_format_duration(s['mean']/1e3)}/{_format_duration(s['min']/1e3)}"
+                    f"/{_format_duration(s['max']/1e3)}")
 
-        n_avg = timing.get('sweeps_averaged')
-        header = (f"[sfcw] --- {label} timing: {timing['num_steps']} steps, "
-                  f"buffers={timing['num_buffers']}, settle={timing['settle_count']}")
-        if n_avg:
-            header += f", averaged over {n_avg} sweeps"
+        _log_separator('─')
+        header = {'steps': timing['num_steps'],
+                  'buffers': timing['num_buffers'],
+                  'settle': timing['settle_count']}
+        if timing.get('sweeps_averaged'):
+            header['averaged_over'] = f"{timing['sweeps_averaged']}_sweeps"
         if timing.get('dropped_steps'):
-            header += f", {timing['dropped_steps']} incomplete steps"
-        print(header + " ---")
-        print(f"[sfcw]   per-step mean/min/max ms | tune->ack {trio('tune_ack')}"
-              f" | settle {trio('settle')} | rx buffers {trio('buffers')}"
-              f" | noise avg {trio('noise_avg')} | other {trio('other')}"
-              f" | STEP TOTAL {trio('step_total')}")
-        print(f"[sfcw]   totals ms | tune {ps['tune_ack']['total']:.2f}"
-              f" | settle {ps['settle']['total']:.2f}"
-              f" | rx {ps['buffers']['total']:.2f}"
-              f" | noise {ps['noise_avg']['total']:.2f}"
-              f" | other {ps['other']['total']:.2f}"
-              f" | all steps {timing['steps_total_ms']:.2f}"
-              f" | grid {timing.get('grid_build_ms', 0.0):.2f}"
-              f" | ref-div {timing['ref_divide_ms']:.2f}"
-              f" | compute {timing.get('process_ms', 0.0):.2f}"
-              f" | SWEEP TOTAL {total_ms:.2f} ({rate:.2f} Hz)")
+            header['incomplete_steps'] = timing['dropped_steps']
+        if timing.get('retune_failures'):
+            header['retune_failures'] = timing['retune_failures']
+        _log_timing(f"{label} TIMING", **header)
+        _log_timing("  per-step mean/min/max",
+                    retune=trio('tune_ack'), settle=trio('settle'),
+                    capture=trio('buffers'), compute=trio('noise_avg'),
+                    other=trio('other'), step_total=trio('step_total'))
+        _log_timing("  phase totals",
+                    retune=_format_duration(ps['tune_ack']['total'] / 1e3),
+                    settle=_format_duration(ps['settle']['total'] / 1e3),
+                    capture=_format_duration(ps['buffers']['total'] / 1e3),
+                    compute=_format_duration(ps['noise_avg']['total'] / 1e3),
+                    other=_format_duration(ps['other']['total'] / 1e3),
+                    all_steps=_format_duration(timing['steps_total_ms'] / 1e3))
+        _log_timing("  sweep overhead",
+                    grid=_format_duration(timing.get('grid_build_ms', 0.0) / 1e3),
+                    ref_div=_format_duration(timing['ref_divide_ms'] / 1e3),
+                    postproc=_format_duration(timing.get('process_ms', 0.0) / 1e3))
+        _log_timing(f"  {label} TOTAL",
+                    time=_format_duration(total_ms / 1e3), rate=f"{rate:.2f}Hz")
 
     def _process_h_cal(self, h_cal):
         num_steps = len(h_cal)

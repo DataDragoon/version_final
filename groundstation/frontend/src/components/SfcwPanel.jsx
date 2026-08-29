@@ -40,6 +40,25 @@ const BUFFER_SAMPLES = 4096;
 const SAMPLE_RATE = 10_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
+// Mirrors COHERENCE_SWEEP_COUNT in pi/radar/sfcw_engine.py — the engine is the source
+// of truth, this is only the button label. Metrics come back for consecutive pairs,
+// so there are COHERENCE_SWEEPS - 1 of them.
+const COHERENCE_SWEEPS = 100;
+// Too many pairs to print in full; show this many and count the rest.
+const COHERENCE_LIST_SHOWN = 12;
+
+function fmtList(vals) {
+  if (!vals?.length) return '—';
+  const head = vals.slice(0, COHERENCE_LIST_SHOWN).map(v => v.toFixed(3)).join(', ');
+  const rest = vals.length - COHERENCE_LIST_SHOWN;
+  return rest > 0 ? `${head} … +${rest} more` : head;
+}
+
+function fmtWorst(vals) {
+  if (!vals?.length) return '—';
+  return Math.min(...vals).toFixed(3);
+}
+
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg,
   bgDiag, bgStats, onResetBgStats, lidarProvenance, lidarOffsetMm, onLidarOffsetChange }) {
   const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, rangeOffset } = params;
@@ -454,7 +473,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
           )}
         >
-          {coherenceRunning ? 'Running (3 sweeps)...' : 'Run Coherence Test'}
+          {coherenceRunning ? `Running (${COHERENCE_SWEEPS} sweeps)...` : 'Run Coherence Test'}
         </button>
         {coherenceResult && (
           <div className="mt-2 space-y-1">
@@ -469,8 +488,15 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               />
             </div>
             <div className="text-[9px] text-[#555] px-1 space-y-0.5">
-              <div>Repeatability: {coherenceResult.repeatability?.map(r => r.toFixed(3)).join(', ')}</div>
-              <div>Correlation: {coherenceResult.correlation?.map(c => c.toFixed(3)).join(', ')}</div>
+              {/* Worst pair first: across ~99 pairs the mean hides a single corrupted
+                  sweep, which is exactly what this test is looking for. */}
+              <div className="text-[#888]">
+                Worst pair — rep {fmtWorst(coherenceResult.repeatability)},
+                corr {fmtWorst(coherenceResult.correlation)}
+                {coherenceResult.num_sweeps ? ` (${coherenceResult.num_sweeps} sweeps)` : ''}
+              </div>
+              <div>Repeatability: {fmtList(coherenceResult.repeatability)}</div>
+              <div>Correlation: {fmtList(coherenceResult.correlation)}</div>
               <div className="text-[#777] mt-1">1.0 = perfect, {'>'} 0.9 = good</div>
             </div>
           </div>

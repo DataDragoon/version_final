@@ -19,6 +19,11 @@ import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
 
+# Sweeps run back-to-back by run_coherence_test(). Metrics are computed between each
+# consecutive pair, so this yields COHERENCE_SWEEP_COUNT - 1 repeatability/correlation
+# values. SfcwPanel.jsx's button label mirrors this number and must track it.
+COHERENCE_SWEEP_COUNT = 100
+
 # Sweep logging, ported from version_bluestar's sfcw_engine so both trees read the
 # same way. Every line carries its own microsecond wall-clock prefix — for the USB
 # markers (CMD SENT / ACK RECEIVED) that prefix *is* the measurement, printed at the
@@ -218,7 +223,8 @@ class SFCWEngine:
         }
 
     def run_coherence_test(self, callback=None):
-        """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
+        """Run COHERENCE_SWEEP_COUNT consecutive sweeps and compute repeatability +
+        correlation metrics between each consecutive pair.
 
         Runs in a new thread. Results sent via callback as a dict with type='coherence_result'.
         """
@@ -236,11 +242,12 @@ class SFCWEngine:
             time.sleep(0.1)
 
             sweeps = []
-            for i in range(3):
+            for i in range(COHERENCE_SWEEP_COUNT):
                 if self._stop_event.is_set():
                     return
                 if callback:
-                    callback({'type': 'progress', 'step': i, 'total': 3, 'freq_mhz': 0})
+                    callback({'type': 'progress', 'step': i,
+                              'total': COHERENCE_SWEEP_COUNT, 'freq_mhz': 0})
                 result = self._perform_sweep()
                 if result and result.get('type') == 'range_profile':
                     h_cal = np.array(result['h_cal_real']) + 1j * np.array(result['h_cal_imag'])

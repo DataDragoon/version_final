@@ -45,7 +45,9 @@ class SFCWEngine:
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
         self.num_buffers = 4
-        self.settle_count = 10
+        # 0 = discard nothing after a retune; the first buffer that arrives is kept.
+        # See CLAUDE.md "Sweep Timing" for the settle_count regression history.
+        self.settle_count = 0
         self.tx1_gain = 50
         self.rx1_gain = 25
         self.tx2_gain = 30
@@ -55,6 +57,7 @@ class SFCWEngine:
         self.range_offset = 0.5
         self.bscan_avg_count = 1
         self.bscan_primer = False
+        self.timing_log = True
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -111,7 +114,9 @@ class SFCWEngine:
             if 'num_buffers' in kwargs:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'settle_count' in kwargs:
-                self.settle_count = max(1, int(kwargs['settle_count']))
+                self.settle_count = max(0, int(kwargs['settle_count']))
+            if 'timing_log' in kwargs:
+                self.timing_log = bool(kwargs['timing_log'])
             if 'tx1_gain' in kwargs:
                 self.tx1_gain = int(kwargs['tx1_gain'])
                 self._gains_dirty = True
@@ -155,6 +160,7 @@ class SFCWEngine:
             'max_range': self.max_range,
             'bscan_avg_count': self.bscan_avg_count,
             'bscan_primer': self.bscan_primer,
+            'timing_log': self.timing_log,
         }
 
     def run_coherence_test(self, callback=None):
@@ -241,6 +247,7 @@ class SFCWEngine:
         """Perform averaged sweeps with hardware already running (warm B-scan mode)."""
         with self._sweep_lock:
             try:
+                t_capture_start = time.perf_counter()
                 if self.bscan_primer:
                     self._perform_sweep_raw()
 
@@ -250,10 +257,13 @@ class SFCWEngine:
                 else:
                     h_cal_accum = None
                     completed = 0
+                    timings = []
                     for i in range(avg_count):
-                        raw = self._perform_sweep_raw()
+                        raw, timing = self._perform_sweep_raw()
                         if raw is None:
                             continue
+                        if timing is not None:
+                            timings.append(timing)
                         if h_cal_accum is None:
                             h_cal_accum = raw.copy()
                         else:
@@ -263,7 +273,17 @@ class SFCWEngine:
                         result = None
                     else:
                         h_cal_avg = h_cal_accum / completed
+                        t_process_start = time.perf_counter()
                         result = self._process_h_cal(h_cal_avg)
+                        timing = self._merge_timings(timings)
+                        if timing is not None:
+                            timing['sweeps_averaged'] = completed
+                            timing['process_ms'] = round(
+                                (time.perf_counter() - t_process_start) * 1e3, 3)
+                            timing['sweep_total_ms'] = round(
+                                (time.perf_counter() - t_capture_start) * 1e3, 3)
+                            result['timing'] = timing
+                            self._log_timing(timing, label='warm sweep')
                 if result is not None and callback:
                     callback(result)
             except Exception as e:
@@ -512,7 +532,9 @@ class SFCWEngine:
             num_buffers = self.num_buffers
             settle_count = self.settle_count
 
+        t_sweep_start = time.perf_counter()
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
+        grid_ms = (time.perf_counter() - t_sweep_start) * 1e3
         num_steps = len(freqs)
 
         def progress(i):
@@ -524,17 +546,25 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        h_cal, dropped_steps, timing = self._sweep_core(
+            freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
         if dropped_steps > 0:
             print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
-        return self._process_h_cal(h_cal)
+        t_process_start = time.perf_counter()
+        result = self._process_h_cal(h_cal)
+        timing['grid_build_ms'] = round(grid_ms, 3)
+        timing['process_ms'] = round((time.perf_counter() - t_process_start) * 1e3, 3)
+        timing['sweep_total_ms'] = round((time.perf_counter() - t_sweep_start) * 1e3, 3)
+        result['timing'] = timing
+        self._log_timing(timing)
+        return result
 
     def _perform_sweep_raw(self):
-        """Like _perform_sweep but returns raw h_cal array for averaging."""
+        """Like _perform_sweep but returns (raw h_cal array, timing) for averaging."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -542,10 +572,15 @@ class SFCWEngine:
             num_buffers = self.num_buffers
             settle_count = self.settle_count
 
+        t_sweep_start = time.perf_counter()
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
+        grid_ms = (time.perf_counter() - t_sweep_start) * 1e3
 
-        h_cal, _ = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
-        return h_cal
+        h_cal, _, timing = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        if timing is not None:
+            timing['grid_build_ms'] = round(grid_ms, 3)
+            timing['sweep_total_ms'] = round((time.perf_counter() - t_sweep_start) * 1e3, 3)
+        return h_cal, timing
 
     def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
         """Sweep loop: retune, settle, capture num_buffers buffers and average them
@@ -555,7 +590,11 @@ class SFCWEngine:
         retune, before trusting the data — see CLAUDE.md's Sweep Timing / quick-tune
         regression note for why this matters and shouldn't be dropped carelessly.
 
-        Returns (h_cal, dropped_steps) or (None, 0) if stopped.
+        Every step is timed and broken into four phases (tune command -> ACK, settle
+        wait, buffer receive, noise-averaging math) plus whatever Python overhead is
+        left over; see _phase_stats/_log_timing for how they're summarised.
+
+        Returns (h_cal, dropped_steps, timing) or (None, 0, None) if stopped.
         """
         num_steps = len(freqs)
         h_signal = np.zeros(num_steps, dtype=np.complex128)
@@ -572,9 +611,20 @@ class SFCWEngine:
 
         dropped_steps = 0
 
+        t_tune_ms = []
+        t_settle_ms = []
+        t_bufs_ms = []
+        t_noise_ms = []
+        t_other_ms = []
+        t_step_ms = []
+
+        t_core_start = time.perf_counter()
+
         for i in range(num_steps):
             if stop_event.is_set():
-                return None, 0
+                return None, 0, None
+
+            t_step_start = time.perf_counter()
 
             f = int(freqs[i])
             if use_qt:
@@ -583,12 +633,17 @@ class SFCWEngine:
             else:
                 libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
                 libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            # libbladeRF's retune/set_frequency calls are synchronous: they return
+            # only once the NIOS has acknowledged the command, so this span is the
+            # "tune command sent -> ACK received" time.
+            t_tuned = time.perf_counter()
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not rx_cond.wait(timeout=1.0):
                         break
+                t_settled = time.perf_counter()
 
                 sig_bufs = []
                 ref_bufs = []
@@ -603,6 +658,8 @@ class SFCWEngine:
                     sig_bufs.append(self._rx_latest[0])
                     ref_bufs.append(self._rx_latest[1])
 
+            t_received = time.perf_counter()
+
             if sig_bufs:
                 sig_arr = np.asarray(sig_bufs, dtype=np.float64)
                 ref_arr = np.asarray(ref_bufs, dtype=np.float64)
@@ -613,15 +670,129 @@ class SFCWEngine:
             else:
                 dropped_steps += 1
 
+            t_averaged = time.perf_counter()
+
             if progress_cb and i % 10 == 0:
                 progress_cb(i)
 
+            t_step_end = time.perf_counter()
+
+            tune = (t_tuned - t_step_start) * 1e3
+            settle = (t_settled - t_tuned) * 1e3
+            bufs = (t_received - t_settled) * 1e3
+            noise = (t_averaged - t_received) * 1e3
+            step = (t_step_end - t_step_start) * 1e3
+            t_tune_ms.append(tune)
+            t_settle_ms.append(settle)
+            t_bufs_ms.append(bufs)
+            t_noise_ms.append(noise)
+            t_other_ms.append(step - tune - settle - bufs - noise)
+            t_step_ms.append(step)
+
+        t_ref_start = time.perf_counter()
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
+        t_ref_end = time.perf_counter()
 
-        return h_cal, dropped_steps
+        timing = {
+            'num_steps': num_steps,
+            'num_buffers': num_buffers,
+            'settle_count': settle_count,
+            'dropped_steps': dropped_steps,
+            'per_step_ms': {
+                'tune_ack': self._phase_stats(t_tune_ms),
+                'settle': self._phase_stats(t_settle_ms),
+                'buffers': self._phase_stats(t_bufs_ms),
+                'noise_avg': self._phase_stats(t_noise_ms),
+                'other': self._phase_stats(t_other_ms),
+                'step_total': self._phase_stats(t_step_ms),
+            },
+            'ref_divide_ms': round((t_ref_end - t_ref_start) * 1e3, 3),
+            'steps_total_ms': round((t_ref_start - t_core_start) * 1e3, 3),
+            'sweep_core_ms': round((t_ref_end - t_core_start) * 1e3, 3),
+        }
+
+        return h_cal, dropped_steps, timing
+
+    @staticmethod
+    def _merge_timings(timings):
+        """Combine the timing blocks of an averaged capture into one aggregate.
+
+        Phase totals add across sub-sweeps; the per-step mean is re-derived from the
+        summed totals and step counts, and min/max are the extremes seen anywhere.
+        """
+        if not timings:
+            return None
+        if len(timings) == 1:
+            return timings[0]
+
+        merged = dict(timings[0])
+        steps = sum(t['num_steps'] for t in timings)
+        per_step = {}
+        for key in timings[0]['per_step_ms']:
+            total = sum(t['per_step_ms'][key]['total'] for t in timings)
+            per_step[key] = {
+                'total': round(total, 3),
+                'mean': round(total / steps, 3) if steps else 0.0,
+                'min': round(min(t['per_step_ms'][key]['min'] for t in timings), 3),
+                'max': round(max(t['per_step_ms'][key]['max'] for t in timings), 3),
+            }
+        merged['per_step_ms'] = per_step
+        merged['dropped_steps'] = sum(t['dropped_steps'] for t in timings)
+        merged['ref_divide_ms'] = round(sum(t['ref_divide_ms'] for t in timings), 3)
+        merged['steps_total_ms'] = round(sum(t['steps_total_ms'] for t in timings), 3)
+        merged['sweep_core_ms'] = round(sum(t['sweep_core_ms'] for t in timings), 3)
+        merged['grid_build_ms'] = round(sum(t.get('grid_build_ms', 0.0) for t in timings), 3)
+        return merged
+
+    @staticmethod
+    def _phase_stats(samples):
+        """total/mean/min/max in ms for one per-step timing phase."""
+        if not samples:
+            return {'total': 0.0, 'mean': 0.0, 'min': 0.0, 'max': 0.0}
+        return {
+            'total': round(float(np.sum(samples)), 3),
+            'mean': round(float(np.mean(samples)), 3),
+            'min': round(float(np.min(samples)), 3),
+            'max': round(float(np.max(samples)), 3),
+        }
+
+    def _log_timing(self, timing, label='sweep'):
+        """Print the per-step breakdown and the sweep total (3 lines per sweep)."""
+        if not self.timing_log or not timing:
+            return
+        ps = timing['per_step_ms']
+        total_ms = timing.get('sweep_total_ms', timing.get('sweep_core_ms', 0.0))
+        rate = (1000.0 / total_ms) if total_ms > 0 else float('inf')
+
+        def trio(key):
+            s = ps[key]
+            return f"{s['mean']:.3f}/{s['min']:.3f}/{s['max']:.3f}"
+
+        n_avg = timing.get('sweeps_averaged')
+        header = (f"[sfcw] --- {label} timing: {timing['num_steps']} steps, "
+                  f"buffers={timing['num_buffers']}, settle={timing['settle_count']}")
+        if n_avg:
+            header += f", averaged over {n_avg} sweeps"
+        if timing.get('dropped_steps'):
+            header += f", {timing['dropped_steps']} incomplete steps"
+        print(header + " ---")
+        print(f"[sfcw]   per-step mean/min/max ms | tune->ack {trio('tune_ack')}"
+              f" | settle {trio('settle')} | rx buffers {trio('buffers')}"
+              f" | noise avg {trio('noise_avg')} | other {trio('other')}"
+              f" | STEP TOTAL {trio('step_total')}")
+        print(f"[sfcw]   totals ms | tune {ps['tune_ack']['total']:.2f}"
+              f" | settle {ps['settle']['total']:.2f}"
+              f" | rx {ps['buffers']['total']:.2f}"
+              f" | noise {ps['noise_avg']['total']:.2f}"
+              f" | other {ps['other']['total']:.2f}"
+              f" | all steps {timing['steps_total_ms']:.2f}"
+              f" | grid {timing.get('grid_build_ms', 0.0):.2f}"
+              f" | ref-div {timing['ref_divide_ms']:.2f}"
+              f" | compute {timing.get('process_ms', 0.0):.2f}"
+              f" | SWEEP TOTAL {total_ms:.2f} ({rate:.2f} Hz)")
 
     def _process_h_cal(self, h_cal):
         num_steps = len(h_cal)

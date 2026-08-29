@@ -535,7 +535,8 @@ throwaway scripts rather than committed tests — worth rebuilding as real tests
   overlap — the settle wait is for *new* callbacks arriving, not elapsed time).
 
 The per-step wait is `settle_count` RX buffer callbacks in `_sweep_core`, now a
-user-controlled `SFCWEngine` param (default 10, exposed in the panel as "Settle",
+user-controlled `SFCWEngine` param (default 0 since 2026-08-28, see "Settle count set
+to 0" below; it was 10 before that — exposed in the panel as "Settle",
 same param family as `num_buffers`/"Buffers") rather than hardcoded. Sweep RX buffers
 are 4096 samples at the 10 Msps set in `_configure_hardware`, i.e. 0.41 ms per buffer —
 `BUFFER_SAMPLES` / `SAMPLE_RATE` in `SfcwPanel.jsx` mirror those two numbers and must
@@ -560,6 +561,36 @@ unnoticed. `benchmark_sweep.py` is a leftover from that pass and is currently br
 (references `_sweep_core_fast`/`sweep_mode`/`_qt_profiles_rx`, all since removed) —
 needs a rewrite against the current `_sweep_core`/master-table API before it's useful
 again.
+
+### Settle count set to 0, and per-step sweep timing (2026-08-28)
+
+`settle_count` default is now **0** (`SFCWEngine.__init__`, `App.jsx` `sfcwParams`,
+`capture_bgmodel.py` `SFCW_PARAMS`; the panel's "Settle" field now allows 0, and
+`set_params` clamps at 0 instead of 1). At 0 the sweep discards nothing after a retune
+— it keeps the very next `num_buffers` RX callbacks to arrive. This was an explicit
+user request, made with the regression above in view: it is the same knob that caused
+the intermittently-garbled sweeps, so if random-looking sweeps reappear, raise "Settle"
+first before looking anywhere else. The per-step timing below is the tool for judging
+what settle actually costs — check `tune->ack` and `rx buffers` against each other
+rather than guessing.
+
+`_sweep_core` now times every step and splits it into: **tune->ack** (the
+`bladerf_schedule_retune`/`bladerf_set_frequency` call, which returns only once the
+NIOS acknowledges, so it is a real command→ACK span), **settle** (waiting
+`settle_count` buffer arrivals), **rx buffers** (waiting for and collecting
+`num_buffers` fresh buffers), **noise avg** (the multi-buffer complex averaging math),
+and **other** (leftover Python overhead, including the progress callback). Sweep-level
+timers cover grid build, reference divide, and `_process_h_cal` (window + IFFT), ending
+in a sweep total and rate. `_phase_stats` reduces each phase to total/mean/min/max;
+`_merge_timings` aggregates sub-sweeps for warm B-scan averaging (`bscan_avg_count > 1`)
+by summing totals and re-deriving the mean, so the numbers stay honest across an
+averaged capture.
+
+Output goes two places: three `[sfcw]` lines printed per sweep (silence with
+`set_params(timing_log=False)`), and a `timing` key on the `range_profile` payload, so
+the groundstation can display it without another round trip. `_perform_sweep_raw` now
+returns `(h_cal, timing)` — callers must unpack. `benchmark_sweep.py` predates all of
+this and is still broken; the in-engine timing supersedes what it measured.
 
 **Regression, 2026-08-20 to 2026-08-23 (fixed): `num_buffers` default silently dropped
 from 4 to 1, killing per-step noise averaging.** The `c33b0ce` "clean up" commit (same

@@ -164,7 +164,7 @@ export default function App() {
     startFreq: 2000,
     stopFreq: 5000,
     stepSize: 60,
-    numBuffers: 4,
+    numBuffers: 10,
     settleCount: 0,
     tx1Gain: 50,
     rx1Gain: 25,

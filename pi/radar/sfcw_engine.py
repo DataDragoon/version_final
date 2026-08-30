@@ -102,7 +102,7 @@ class SFCWEngine:
         self.start_freq = 2_000_000_000
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
-        self.num_buffers = 4
+        self.num_buffers = 10
         # 0 = discard nothing after a retune; the first buffer that arrives is kept.
         # See CLAUDE.md "Sweep Timing" for the settle_count regression history.
         self.settle_count = 0
@@ -700,7 +700,17 @@ class SFCWEngine:
         log_steps = ({0, 1, 2, 3, 50, 150, num_steps // 2, num_steps - 1}
                      if _TIMING_LOG else frozenset())
         total_wait = settle_count + num_buffers
-        buf_bytes = 4096 * 2 * 2 * 2  # 4096 samples/ch, 2 ch, I+Q, int16
+
+        def buf_bytes():
+            """Actual size of one RX callback's payload, per channel.
+
+            Do NOT hardcode this. bladerf_sync_rx() counts *interleaved* samples on
+            RX_X2 (sync.c: samples_per_ts = 2), so a request for N returns N/2 per
+            channel -- half what the driver's buffer sizing assumes. Reading the real
+            array keeps the log honest about what actually arrived.
+            """
+            latest = self._rx_latest
+            return latest[0].nbytes if latest is not None else 0
 
         t_tune_ms = []
         t_settle_ms = []
@@ -768,7 +778,7 @@ class SFCWEngine:
                     if verbose and self._rx_seq <= target_seq:
                         now = time.perf_counter()
                         _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
-                                    type="SETTLE(discard)", size=f"{buf_bytes}B",
+                                    type="SETTLE(discard)", size=f"{buf_bytes()}B",
                                     dt=_format_duration(now - last_pkt_time))
                         last_pkt_time = now
                         pkt_num += 1
@@ -797,7 +807,7 @@ class SFCWEngine:
                         now = time.perf_counter()
                         _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
                                     type="CAPTURE(keep)", buf=f"{buf_idx+1}/{num_buffers}",
-                                    size=f"{buf_bytes}B",
+                                    size=f"{buf_bytes()}B",
                                     dt=_format_duration(now - last_pkt_time))
                         last_pkt_time = now
                         pkt_num += 1
@@ -807,7 +817,7 @@ class SFCWEngine:
             if verbose:
                 _log_timing(f"  Step {i:3d}      ALL {len(sig_bufs)}/{total_wait} EP0x81 BUFFERS DONE",
                             total_time=_format_duration(t_received - t_tuned),
-                            data=f"{len(sig_bufs)*buf_bytes}B_kept_from_bladeRF")
+                            data=f"{len(sig_bufs)*buf_bytes()}B_kept_from_bladeRF")
                 _log_timing(f"  Step {i:3d} ... PROCESSING (Pi CPU)",
                             operation="extract_IQ_via_ref_tone_mixing",
                             num_buffers=len(sig_bufs), note="no_USB_here")
@@ -854,7 +864,7 @@ class SFCWEngine:
 
             if verbose:
                 _log_timing(f"  Step {i:3d}     USB summary: 2x Retune OUT(16B)+ACK(16B) "
-                            f"+ {pkt_num - 1}x Bulk IN({buf_bytes}B)")
+                            f"+ {pkt_num - 1}x Bulk IN({buf_bytes()}B)")
                 if i < num_steps - 1:
                     print(flush=True)
 
